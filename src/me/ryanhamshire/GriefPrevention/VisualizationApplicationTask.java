@@ -43,10 +43,17 @@ class VisualizationApplicationTask implements Runnable
 			VisualizationElement element = visualization.elements.get(i);
 			
 			//send the player a fake block change event
+			if(!element.location.getChunk().isLoaded()) continue;  //cheap distance check
 			player.sendBlockChange(element.location, element.visualizedMaterial, element.visualizedData);
 		}
 		
 		//remember the visualization applied to this player for later (so it can be inexpensively reverted)
 		playerData.currentVisualization = visualization;
+		
+		//schedule automatic visualization reversion in 60 seconds.
+		GriefPrevention.instance.getServer().getScheduler().scheduleSyncDelayedTask(
+	        GriefPrevention.instance, 
+	        new VisualizationReversionTask(player, playerData, visualization),
+	        20L * 60);  //60 seconds
 	}
 }

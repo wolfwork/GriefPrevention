@@ -40,6 +40,7 @@ public abstract class DataStore
 	
 	//in-memory cache for claim data
 	ArrayList<Claim> claims = new ArrayList<Claim>();
+	ConcurrentHashMap<String, ArrayList<Claim>> chunksToClaimsMap = new ConcurrentHashMap<String, ArrayList<Claim>>();
 	
 	//in-memory cache for messages
 	private String [] messages;
@@ -54,6 +55,7 @@ public abstract class DataStore
 	protected final static String dataLayerFolderPath = "plugins" + File.separator + "GriefPreventionData";
 	final static String configFilePath = dataLayerFolderPath + File.separator + "config.yml";
 	final static String messagesFilePath = dataLayerFolderPath + File.separator + "messages.yml";
+	final static String softMuteFilePath = dataLayerFolderPath + File.separator + "softMute.txt";
 
     //the latest version of the data schema implemented here
 	protected static final int latestSchemaVersion = 1;
@@ -69,6 +71,9 @@ public abstract class DataStore
     static final String SURVIVAL_VIDEO_URL = "http://bit.ly/mcgpuser";
     static final String CREATIVE_VIDEO_URL = "http://bit.ly/mcgpcrea";
     static final String SUBDIVISION_VIDEO_URL = "http://bit.ly/mcgpsub";
+    
+    //list of UUIDs which are soft-muted
+    ConcurrentHashMap<UUID, Boolean> softMuteMap = new ConcurrentHashMap<UUID, Boolean>(); 
     
     protected int getSchemaVersion()
     {
@@ -108,14 +113,133 @@ public abstract class DataStore
                 this.saveClaim(claim);
             }
             
+            //clean up any UUID conversion work
+            if(UUIDFetcher.lookupCache != null)
+            {
+                UUIDFetcher.lookupCache.clear();
+            }
+            
             GriefPrevention.AddLogEntry("Update finished.");
         }
 		
-		//make a note of the data store schema version
+		//load list of soft mutes
+        this.loadSoftMutes();
+        
+        //make a note of the data store schema version
 		this.setSchemaVersion(latestSchemaVersion);
 	}
 	
-	//removes cached player data from memory
+	private void loadSoftMutes()
+	{
+	    File softMuteFile = new File(softMuteFilePath);
+        if(softMuteFile.exists())
+        {
+            BufferedReader inStream = null;
+            try
+            {
+                //open the file
+                inStream = new BufferedReader(new FileReader(softMuteFile.getAbsolutePath()));
+                
+                //while there are lines left
+                String nextID = inStream.readLine();
+                while(nextID != null)
+                {                
+                    //parse line into a UUID
+                    UUID playerID;
+                    try
+                    {
+                        playerID = UUID.fromString(nextID);
+                    }
+                    catch(Exception e)
+                    {
+                        playerID = null;
+                        GriefPrevention.AddLogEntry("Failed to parse soft mute entry as a UUID: " + nextID);
+                    }
+                    
+                    //push it into the map
+                    if(playerID != null)
+                    {
+                        this.softMuteMap.put(playerID, true);
+                    }
+                    
+                    //move to the next
+                    nextID = inStream.readLine();
+                }
+            }
+            catch(Exception e)
+            {
+                GriefPrevention.AddLogEntry("Failed to read from the soft mute data file: " + e.toString());
+                e.printStackTrace();
+            }
+            
+            try
+            {
+                if(inStream != null) inStream.close();                  
+            }
+            catch(IOException exception) {}
+        }        
+    }
+	
+	//updates soft mute map and data file
+	boolean toggleSoftMute(UUID playerID)
+	{
+	    boolean newValue = !this.isSoftMuted(playerID);
+	    
+	    this.softMuteMap.put(playerID, newValue);
+	    this.saveSoftMutes();
+	    
+	    return newValue;
+	}
+	
+	boolean isSoftMuted(UUID playerID)
+	{
+	    Boolean mapEntry = this.softMuteMap.get(playerID);
+	    if(mapEntry == null || mapEntry == Boolean.FALSE)
+	    {
+	        return false;
+	    }
+	    
+	    return true;
+	}
+	
+	private void saveSoftMutes()
+	{
+	    BufferedWriter outStream = null;
+        
+        try
+        {
+            //open the file and write the new value
+            File softMuteFile = new File(softMuteFilePath);
+            softMuteFile.createNewFile();
+            outStream = new BufferedWriter(new FileWriter(softMuteFile));
+            
+            for(Map.Entry<UUID, Boolean> entry : softMuteMap.entrySet())
+            {
+                if(entry.getValue().booleanValue())
+                {
+                    outStream.write(entry.getKey().toString());
+                    outStream.newLine();
+                }
+            }
+            
+        }       
+        
+        //if any problem, log it
+        catch(Exception e)
+        {
+            GriefPrevention.AddLogEntry("Unexpected exception saving soft mute data: " + e.getMessage());
+            e.printStackTrace();
+        }
+        
+        //close the file
+        try
+        {
+            if(outStream != null) outStream.close();
+        }
+        catch(IOException exception) {}
+	}
+	
+    //removes cached player data from memory
 	synchronized void clearCachedPlayerData(UUID playerID)
 	{
 		this.playerNameToPlayerDataMap.remove(playerID);
@@ -186,47 +310,61 @@ public abstract class DataStore
 		//adjust blocks and other records
 		if(ownerData != null)
 		{
-			ownerData.claims.remove(claim);
-			ownerData.bonusClaimBlocks -= claim.getArea();
+			ownerData.getClaims().remove(claim);
+			ownerData.setBonusClaimBlocks(ownerData.getBonusClaimBlocks() - claim.getArea());
 			this.savePlayerData(claim.ownerID, ownerData);
 		}
 		
-		newOwnerData.claims.add(claim);
-		newOwnerData.bonusClaimBlocks += claim.getArea();
+		newOwnerData.getClaims().add(claim);
+		newOwnerData.setBonusClaimBlocks(newOwnerData.getBonusClaimBlocks() + claim.getArea());
 		this.savePlayerData(newOwnerID, newOwnerData);
 	}
 
 	//adds a claim to the datastore, making it an effective claim
-	synchronized void addClaim(Claim newClaim)
+	synchronized void addClaim(Claim newClaim, boolean writeToStorage)
 	{
 		//subdivisions are easy
 		if(newClaim.parent != null)
 		{
 			newClaim.parent.children.add(newClaim);
 			newClaim.inDataStore = true;
-			this.saveClaim(newClaim);
+			if(writeToStorage)
+			{
+			    this.saveClaim(newClaim);
+			}
 			return;
 		}
 		
 		//add it and mark it as added
-		int j = 0;
-		while(j < this.claims.size() && !this.claims.get(j).greaterThan(newClaim)) j++;
-		if(j < this.claims.size())
-			this.claims.add(j, newClaim);
-		else
-			this.claims.add(this.claims.size(), newClaim);
+		this.claims.add(newClaim);
+		ArrayList<String> chunkStrings = newClaim.getChunkStrings();
+		for(String chunkString : chunkStrings)
+		{
+		    ArrayList<Claim> claimsInChunk = this.chunksToClaimsMap.get(chunkString);
+		    if(claimsInChunk == null)
+		    {
+		        claimsInChunk = new ArrayList<Claim>();
+		        this.chunksToClaimsMap.put(chunkString, claimsInChunk);
+		    }
+		    
+		    claimsInChunk.add(newClaim);
+		}
+		
 		newClaim.inDataStore = true;
 		
 		//except for administrative claims (which have no owner), update the owner's playerData with the new claim
-		if(!newClaim.isAdminClaim())
+		if(!newClaim.isAdminClaim() && writeToStorage)
 		{
 			PlayerData ownerData = this.getPlayerData(newClaim.ownerID);
-			ownerData.claims.add(newClaim);
+			ownerData.getClaims().add(newClaim);
 			this.savePlayerData(newClaim.ownerID, ownerData);
 		}
 		
 		//make sure the claim is saved to disk
-		this.saveClaim(newClaim);
+		if(writeToStorage)
+		{
+		    this.saveClaim(newClaim);
+		}
 	}
 	
 	//turns a location into a string, useful in data storage
@@ -251,9 +389,9 @@ public abstract class DataStore
 		String [] elements = string.split(locationStringDelimiter);
 	    
 		//expect four elements - world name, X, Y, and Z, respectively
-		if(elements.length != 4)
+		if(elements.length < 4)
 		{
-			throw new Exception("Expected four distinct parts to the location string.");
+			throw new Exception("Expected four distinct parts to the location string: \"" + string + "\"");
 		}
 		
 		String worldName = elements[0];
@@ -309,21 +447,11 @@ public abstract class DataStore
 		//first, look in memory
 		PlayerData playerData = this.playerNameToPlayerDataMap.get(playerID);
 		
-		//if not there, look in secondary storage
+		//if not there, build a fresh instance with some blanks for what may be in secondary storage
 		if(playerData == null)
 		{
-			playerData = this.getPlayerDataFromStorage(playerID);
+			playerData = new PlayerData();
 			playerData.playerID = playerID;
-			
-			//find all the claims belonging to this player and note them for future reference
-			for(int i = 0; i < this.claims.size(); i++)
-			{
-				Claim claim = this.claims.get(i);
-				if(playerID.equals(claim.ownerID))
-				{
-					playerData.claims.add(claim);
-				}
-			}
 			
 			//shove that new player data into the hash map cache
 			this.playerNameToPlayerDataMap.put(playerID, playerData);
@@ -338,14 +466,24 @@ public abstract class DataStore
 	//deletes a claim or subdivision
 	synchronized public void deleteClaim(Claim claim)
 	{
-		//subdivisions are simple - just remove them from their parent claim and save that claim
+	    //subdivisions are simple - just remove them from their parent claim and save that claim
 		if(claim.parent != null)
 		{
 			Claim parentClaim = claim.parent;
 			parentClaim.children.remove(claim);
-			this.saveClaim(parentClaim);
+			claim.inDataStore = false;
+	        this.saveClaim(parentClaim);
 			return;
 		}
+		
+		//delete any children
+        for(int j = 0; j < claim.children.size(); j++)
+        {
+            this.deleteClaim(claim.children.get(j));
+        }
+        
+        //mark as deleted so any references elsewhere can be ignored
+        claim.inDataStore = false;
 		
 		//remove from memory
 		for(int i = 0; i < this.claims.size(); i++)
@@ -353,14 +491,23 @@ public abstract class DataStore
 			if(claims.get(i).id.equals(claim.id))
 			{
 				this.claims.remove(i);
-				claim.inDataStore = false;
-				for(int j = 0; j < claim.children.size(); j++)
-				{
-					claim.children.get(j).inDataStore = false;
-				}
 				break;
 			}
 		}
+		
+		ArrayList<String> chunkStrings = claim.getChunkStrings();
+        for(String chunkString : chunkStrings)
+        {
+            ArrayList<Claim> claimsInChunk = this.chunksToClaimsMap.get(chunkString);
+            for(int j = 0; j < claimsInChunk.size(); j++)
+            {
+                if(claimsInChunk.get(j).id.equals(claim.id))
+                {
+                    claimsInChunk.remove(j);
+                    break;
+                }
+            }
+        }
 		
 		//remove from secondary storage
 		this.deleteClaimFromSecondaryStorage(claim);
@@ -369,11 +516,11 @@ public abstract class DataStore
 		if(!claim.isAdminClaim())
 		{
 			PlayerData ownerData = this.getPlayerData(claim.ownerID);
-			for(int i = 0; i < ownerData.claims.size(); i++)
+			for(int i = 0; i < ownerData.getClaims().size(); i++)
 			{
-				if(ownerData.claims.get(i).id.equals(claim.id))
+				if(ownerData.getClaims().get(i).id.equals(claim.id))
 				{
-					ownerData.claims.remove(i);
+					ownerData.getClaims().remove(i);
 					break;
 				}
 			}
@@ -391,40 +538,43 @@ public abstract class DataStore
 		//check cachedClaim guess first.  if it's in the datastore and the location is inside it, we're done
 		if(cachedClaim != null && cachedClaim.inDataStore && cachedClaim.contains(location, ignoreHeight, true)) return cachedClaim;
 		
-		//the claims list is ordered by greater boundary corner
-		//create a temporary "fake" claim in memory for comparison purposes		
-		Claim tempClaim = new Claim();
-		tempClaim.lesserBoundaryCorner = location;
+		//find a top level claim
+		String chunkID = this.getChunkString(location);
+		ArrayList<Claim> claimsInChunk = this.chunksToClaimsMap.get(chunkID);
+		if(claimsInChunk == null) return null;
 		
-		//otherwise, search all existing claims until we find the right claim
-		for(int i = 0; i < this.claims.size(); i++)
+		for(Claim claim : claimsInChunk)
 		{
-			Claim claim = this.claims.get(i);
-			
-			//if we reach a claim which is greater than the temp claim created above, there's definitely no claim
-			//in the collection which includes our location
-			if(claim.greaterThan(tempClaim)) return null;
-			
-			//find a top level claim
-			if(claim.contains(location, ignoreHeight, false))
-			{
-				//when we find a top level claim, if the location is in one of its subdivisions,
-				//return the SUBDIVISION, not the top level claim
-				for(int j = 0; j < claim.children.size(); j++)
-				{
-					Claim subdivision = claim.children.get(j);
-					if(subdivision.contains(location, ignoreHeight, false)) return subdivision;
-				}						
-					
-				return claim;
-			}
+		    if(claim.contains(location, ignoreHeight, false))
+		    {
+		        //when we find a top level claim, if the location is in one of its subdivisions,
+                //return the SUBDIVISION, not the top level claim
+                for(int j = 0; j < claim.children.size(); j++)
+                {
+                    Claim subdivision = claim.children.get(j);
+                    if(subdivision.contains(location, ignoreHeight, false)) return subdivision;
+                }                       
+                    
+                return claim;
+		    }
 		}
 		
 		//if no claim found, return null
 		return null;
 	}
 	
-	//creates a claim.
+	//gets a unique, persistent identifier string for a chunk
+	private String getChunkString(Location location)
+	{
+        StringBuilder builder = new StringBuilder(
+            String.valueOf(location.getBlockX() >> 4))
+            .append(location.getWorld().getName())
+            .append(location.getBlockZ() >> 4);
+
+        return builder.toString();
+    }
+	
+    //creates a claim.
 	//if the new claim would overlap an existing claim, returns a failure along with a reference to the existing claim
 	//otherwise, returns a success along with a reference to the new claim
 	//use ownerName == "" for administrative claims
@@ -474,7 +624,7 @@ public abstract class DataStore
 		}
 		
 		//creative mode claims always go to bedrock
-		if(GriefPrevention.instance.config_claims_enabledCreativeWorlds.contains(world))
+		if(GriefPrevention.instance.config_claims_worldModes.get(world) == ClaimsMode.Creative)
 		{
 			smally = 2;
 		}
@@ -518,7 +668,7 @@ public abstract class DataStore
 		}
 		
 		//otherwise add this new claim to the data store to make it effective
-		this.addClaim(newClaim);
+		this.addClaim(newClaim, true);
 		
 		//then return success along with reference to new claim
 		result.succeeded = true;
@@ -527,8 +677,20 @@ public abstract class DataStore
 	}
 	
 	//saves changes to player data to secondary storage.  MUST be called after you're done making changes, otherwise a reload will lose them
+    public void savePlayerDataSync(UUID playerID, PlayerData playerData)
+    {
+        //ensure player data is already read from file before trying to save
+        playerData.getAccruedClaimBlocks();
+        playerData.getClaims();
+        this.asyncSavePlayerData(playerID, playerData);
+    }
+	
+	//saves changes to player data to secondary storage.  MUST be called after you're done making changes, otherwise a reload will lose them
 	public void savePlayerData(UUID playerID, PlayerData playerData)
 	{
+	    //ensure player data is already read from file before trying to save
+	    playerData.getAccruedClaimBlocks();
+	    playerData.getClaims();
 	    new SavePlayerDataThread(playerID, playerData).start();
 	}
 	
@@ -557,7 +719,7 @@ public abstract class DataStore
 		}
 		
 		//save changes
-		this.addClaim(claim);
+		this.addClaim(claim, true);
 	}
 
 	//starts a siege on a claim
@@ -833,7 +995,7 @@ public abstract class DataStore
 		else
 		{
 			//put original claim back
-			this.addClaim(claim);
+			this.addClaim(claim, true);
 		}
 		
 		return result;
@@ -889,7 +1051,6 @@ public abstract class DataStore
 		this.addDefault(defaults, Messages.AllAdminDeleted, "Deleted all administrative claims.", null);
 		this.addDefault(defaults, Messages.AdjustBlocksSuccess, "Adjusted {0}'s bonus claim blocks by {1}.  New total bonus blocks: {2}.", "0: player; 1: adjustment; 2: new total");
 		this.addDefault(defaults, Messages.NotTrappedHere, "You can build here.  Save yourself.", null);
-		this.addDefault(defaults, Messages.TrappedOnCooldown, "You used /trapped within the last {0} hours.  You have to wait about {1} more minutes before using it again.", "0: default cooldown hours; 1: remaining minutes");
 		this.addDefault(defaults, Messages.RescuePending, "If you stay put for 10 seconds, you'll be teleported out.  Please wait.", null);
 		this.addDefault(defaults, Messages.NonSiegeWorld, "Siege is disabled here.", null);
 		this.addDefault(defaults, Messages.AlreadySieging, "You're already involved in a siege.", null);
@@ -926,9 +1087,7 @@ public abstract class DataStore
 		this.addDefault(defaults, Messages.PlayerTooCloseForFire, "You can't start a fire this close to {0}.", "0: other player's name");
 		this.addDefault(defaults, Messages.TooDeepToClaim, "This chest can't be protected because it's too deep underground.  Consider moving it.", null);
 		this.addDefault(defaults, Messages.ChestClaimConfirmation, "This chest is protected.", null);
-		this.addDefault(defaults, Messages.AutomaticClaimNotification, "This chest and nearby blocks are protected from breakage and theft.  The temporary gold and glowstone blocks mark the protected area.  To toggle them on and off, right-click with a stick.", null);
-		this.addDefault(defaults, Messages.TrustCommandAdvertisement, "Use the /trust command to grant other players access.", null);
-		this.addDefault(defaults, Messages.GoldenShovelAdvertisement, "To claim more land, you need a golden shovel.  When you equip one, you'll get more information.", null);
+		this.addDefault(defaults, Messages.AutomaticClaimNotification, "This chest and nearby blocks are protected from breakage and theft.", null);
 		this.addDefault(defaults, Messages.UnprotectedChestWarning, "This chest is NOT protected.  Consider using a golden shovel to expand an existing claim or to create a new one.", null);
 		this.addDefault(defaults, Messages.ThatPlayerPvPImmune, "You can't injure defenseless players.", null);
 		this.addDefault(defaults, Messages.CantFightWhileImmune, "You can't fight someone while you're protected from PvP.", null);
@@ -989,7 +1148,7 @@ public abstract class DataStore
 		this.addDefault(defaults, Messages.ClaimTooSmallForEntities, "This claim isn't big enough for that.  Try enlarging it.", null);
 		this.addDefault(defaults, Messages.TooManyEntitiesInClaim, "This claim has too many entities already.  Try enlarging the claim or removing some animals, monsters, paintings, or minecarts.", null);
 		this.addDefault(defaults, Messages.YouHaveNoClaims, "You don't have any land claims.", null);
-		this.addDefault(defaults, Messages.ConfirmFluidRemoval, "Abandoning this claim will remove all your lava and water.  If you're sure, use /AbandonClaim again.", null);
+		this.addDefault(defaults, Messages.ConfirmFluidRemoval, "Abandoning this claim will remove lava inside the claim.  If you're sure, use /AbandonClaim again.", null);
 		this.addDefault(defaults, Messages.AutoBanNotify, "Auto-banned {0}({1}).  See logs for details.", null);
 		this.addDefault(defaults, Messages.AdjustGroupBlocksSuccess, "Adjusted bonus claim blocks for players with the {0} permission by {1}.  New total: {2}.", "0: permission; 1: adjustment amount; 2: new total bonus");
 		this.addDefault(defaults, Messages.InvalidPermissionID, "Please specify a player name, or a permission in [brackets].", null);
@@ -997,7 +1156,7 @@ public abstract class DataStore
 		this.addDefault(defaults, Messages.HowToClaimRegex, "(^|.*\\W)how\\W.*\\W(claim|protect|lock)(\\W.*|$)", "This is a Java Regular Expression.  Look it up before editing!  It's used to tell players about the demo video when they ask how to claim land.");
 		this.addDefault(defaults, Messages.NoBuildOutsideClaims, "You can't build here unless you claim some land first.", null);
 		this.addDefault(defaults, Messages.PlayerOfflineTime, "  Last login: {0} days ago.", "0: number of full days since last login");
-		this.addDefault(defaults, Messages.BuildingOutsideClaims, "Other players can undo your work here!  Consider using a golden shovel to claim this area so that your work will be protected.", null);
+		this.addDefault(defaults, Messages.BuildingOutsideClaims, "Other players can build here, too.  Consider creating a land claim to protect your work!", null);
 		this.addDefault(defaults, Messages.TrappedWontWorkHere, "Sorry, unable to find a safe location to teleport you to.  Contact an admin, or consider /kill if you don't want to wait.", null);
 		this.addDefault(defaults, Messages.CommandBannedInPvP, "You can't use that command while in PvP combat.", null);
 		this.addDefault(defaults, Messages.UnclaimCleanupWarning, "The land you've unclaimed may be changed by other players or cleaned up by administrators.  If you've built something there you want to keep, you should reclaim it.", null);
@@ -1013,6 +1172,8 @@ public abstract class DataStore
 		this.addDefault(defaults, Messages.ClaimExplosivesAdvertisement, "To allow explosives to destroy blocks in this land claim, use /ClaimExplosions.", null);
 		this.addDefault(defaults, Messages.PlayerInPvPSafeZone, "That player is in a PvP safe zone.", null);		
 		this.addDefault(defaults, Messages.NoPistonsOutsideClaims, "Warning: Pistons won't move blocks outside land claims.", null);
+		this.addDefault(defaults, Messages.SoftMuted, "Soft-muted {0}.", "The changed player's name.");
+		this.addDefault(defaults, Messages.UnSoftMuted, "Un-soft-muted {0}.", "The changed player's name.");
 		
 		//load the config file
 		FileConfiguration config = YamlConfiguration.loadConfiguration(new File(messagesFilePath));

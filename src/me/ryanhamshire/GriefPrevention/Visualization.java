@@ -46,9 +46,9 @@ public class Visualization
 		}
 		
 		//if he's online, create a task to send him the visualization in about half a second
-		if(player.isOnline())
+		if(player.isOnline() && visualization.elements.get(0).location.getWorld().equals(player.getWorld()))
 		{
-			GriefPrevention.instance.getServer().getScheduler().scheduleSyncDelayedTask(GriefPrevention.instance, new VisualizationApplicationTask(player, playerData, visualization), 10L);
+			GriefPrevention.instance.getServer().getScheduler().scheduleSyncDelayedTask(GriefPrevention.instance, new VisualizationApplicationTask(player, playerData, visualization), 1L);
 		}
 	}
 	
@@ -65,7 +65,16 @@ public class Visualization
 			{			
 				for(int i = 0; i < visualization.elements.size(); i++)
 				{
-					VisualizationElement element = visualization.elements.get(i);
+				    VisualizationElement element = visualization.elements.get(i);
+				    
+				    //check player still in world where visualization exists
+				    if(i == 0)
+				    {
+				        if(!player.getWorld().equals(element.location.getWorld())) return;
+				    }
+				    
+					if(!element.location.getChunk().isLoaded()) continue;
+					if(element.location.distanceSquared(player.getLocation()) > 10000) continue;
 					Block block = element.location.getBlock();
 					player.sendBlockChange(element.location, block.getType(), block.getData());
 				}
@@ -93,6 +102,12 @@ public class Visualization
 			visualization.addClaimElements(claim.children.get(i), height, VisualizationType.Subdivision, locality);
 		}
 		
+		//special visualization for administrative land claims
+		if(claim.isAdminClaim() && visualizationType == VisualizationType.Claim)
+        {
+            visualizationType = VisualizationType.AdminClaim;
+        }
+		
 		//add top level last so that it takes precedence (it shows on top when the child claim boundaries overlap with its boundaries)
 		visualization.addClaimElements(claim, height, visualizationType, locality);
 		
@@ -107,6 +122,7 @@ public class Visualization
 		Location smallXsmallZ = claim.getLesserBoundaryCorner();
 		Location bigXbigZ = claim.getGreaterBoundaryCorner();
 		World world = smallXsmallZ.getWorld();
+		boolean waterIsTransparent = locality.getBlock().getType() == Material.STATIONARY_WATER;
 		
 		int smallx = smallXsmallZ.getBlockX();
 		int smallz = smallXsmallZ.getBlockZ();
@@ -121,6 +137,12 @@ public class Visualization
 			cornerMaterial = Material.GLOWSTONE;
 			accentMaterial = Material.GOLD_BLOCK;
 		}
+		
+		else if(visualizationType == VisualizationType.AdminClaim)
+        {
+            cornerMaterial = Material.GLOWSTONE;
+            accentMaterial = Material.JACK_O_LANTERN;
+        }
 		
 		else if(visualizationType == VisualizationType.Subdivision)
 		{
@@ -141,24 +163,24 @@ public class Visualization
 		}
 		
 		//bottom left corner
-		this.elements.add(new VisualizationElement(getVisibleLocation(world, smallx, height, smallz), cornerMaterial, (byte)0));
-		this.elements.add(new VisualizationElement(getVisibleLocation(world, smallx + 1, height, smallz), accentMaterial, (byte)0));
-		this.elements.add(new VisualizationElement(getVisibleLocation(world, smallx, height, smallz + 1), accentMaterial, (byte)0));
+		this.elements.add(new VisualizationElement(getVisibleLocation(world, smallx, height, smallz, waterIsTransparent), cornerMaterial, (byte)0));
+		this.elements.add(new VisualizationElement(getVisibleLocation(world, smallx + 1, height, smallz, waterIsTransparent), accentMaterial, (byte)0));
+		this.elements.add(new VisualizationElement(getVisibleLocation(world, smallx, height, smallz + 1, waterIsTransparent), accentMaterial, (byte)0));
 		
 		//bottom right corner
-		this.elements.add(new VisualizationElement(getVisibleLocation(world, bigx, height, smallz), cornerMaterial, (byte)0));
-		this.elements.add(new VisualizationElement(getVisibleLocation(world, bigx - 1, height, smallz), accentMaterial, (byte)0));
-		this.elements.add(new VisualizationElement(getVisibleLocation(world, bigx, height, smallz + 1), accentMaterial, (byte)0));
+		this.elements.add(new VisualizationElement(getVisibleLocation(world, bigx, height, smallz, waterIsTransparent), cornerMaterial, (byte)0));
+		this.elements.add(new VisualizationElement(getVisibleLocation(world, bigx - 1, height, smallz, waterIsTransparent), accentMaterial, (byte)0));
+		this.elements.add(new VisualizationElement(getVisibleLocation(world, bigx, height, smallz + 1, waterIsTransparent), accentMaterial, (byte)0));
 		
 		//top right corner
-		this.elements.add(new VisualizationElement(getVisibleLocation(world, bigx, height, bigz), cornerMaterial, (byte)0));
-		this.elements.add(new VisualizationElement(getVisibleLocation(world, bigx - 1, height, bigz), accentMaterial, (byte)0));
-		this.elements.add(new VisualizationElement(getVisibleLocation(world, bigx, height, bigz - 1), accentMaterial, (byte)0));
+		this.elements.add(new VisualizationElement(getVisibleLocation(world, bigx, height, bigz, waterIsTransparent), cornerMaterial, (byte)0));
+		this.elements.add(new VisualizationElement(getVisibleLocation(world, bigx - 1, height, bigz, waterIsTransparent), accentMaterial, (byte)0));
+		this.elements.add(new VisualizationElement(getVisibleLocation(world, bigx, height, bigz - 1, waterIsTransparent), accentMaterial, (byte)0));
 		
 		//top left corner
-		this.elements.add(new VisualizationElement(getVisibleLocation(world, smallx, height, bigz), cornerMaterial, (byte)0));
-		this.elements.add(new VisualizationElement(getVisibleLocation(world, smallx + 1, height, bigz), accentMaterial, (byte)0));
-		this.elements.add(new VisualizationElement(getVisibleLocation(world, smallx, height, bigz - 1), accentMaterial, (byte)0));
+		this.elements.add(new VisualizationElement(getVisibleLocation(world, smallx, height, bigz, waterIsTransparent), cornerMaterial, (byte)0));
+		this.elements.add(new VisualizationElement(getVisibleLocation(world, smallx + 1, height, bigz, waterIsTransparent), accentMaterial, (byte)0));
+		this.elements.add(new VisualizationElement(getVisibleLocation(world, smallx, height, bigz - 1, waterIsTransparent), accentMaterial, (byte)0));
 		
 		//locality
 		int minx = locality.getBlockX() - 100;
@@ -170,40 +192,47 @@ public class Visualization
 		for(int x = smallx + 10; x < bigx - 10; x += 10)
 		{
 			if(x > minx && x < maxx)
-				this.elements.add(new VisualizationElement(getVisibleLocation(world, x, height, bigz), accentMaterial, (byte)0));
+				this.elements.add(new VisualizationElement(getVisibleLocation(world, x, height, bigz, waterIsTransparent), accentMaterial, (byte)0));
 		}
 		
 		//bottom line
 		for(int x = smallx + 10; x < bigx - 10; x += 10)
 		{
 			if(x > minx && x < maxx)
-				this.elements.add(new VisualizationElement(getVisibleLocation(world, x, height, smallz), accentMaterial, (byte)0));
+				this.elements.add(new VisualizationElement(getVisibleLocation(world, x, height, smallz, waterIsTransparent), accentMaterial, (byte)0));
 		}
 		
 		//left line
 		for(int z = smallz + 10; z < bigz - 10; z += 10)
 		{
 			if(z > minz && z < maxz)
-				this.elements.add(new VisualizationElement(getVisibleLocation(world, smallx, height, z), accentMaterial, (byte)0));
+				this.elements.add(new VisualizationElement(getVisibleLocation(world, smallx, height, z, waterIsTransparent), accentMaterial, (byte)0));
 		}
 		
 		//right line
 		for(int z = smallz + 10; z < bigz - 10; z += 10)
 		{
 			if(z > minz && z < maxz)
-				this.elements.add(new VisualizationElement(getVisibleLocation(world, bigx, height, z), accentMaterial, (byte)0));
+				this.elements.add(new VisualizationElement(getVisibleLocation(world, bigx, height, z, waterIsTransparent), accentMaterial, (byte)0));
 		}
 	}
 	
 	//finds a block the player can probably see.  this is how visualizations "cling" to the ground or ceiling
-	private static Location getVisibleLocation(World world, int x, int y, int z)
+	private static Location getVisibleLocation(World world, int x, int y, int z, boolean waterIsTransparent)
 	{
-		Block block = world.getBlockAt(x,  y, z);
-		BlockFace direction = (isTransparent(block)) ? BlockFace.DOWN : BlockFace.UP;
+		//cheap distance check - also avoids loading chunks just for a big visualization
+	    Location location = new Location(world, x, y, z);
+		if(!location.getChunk().isLoaded())
+		{
+		    return location;
+		}
+		
+	    Block block = world.getBlockAt(x,  y, z);
+		BlockFace direction = (isTransparent(block, waterIsTransparent)) ? BlockFace.DOWN : BlockFace.UP;
 				
 		while(	block.getY() >= 1 && 
 				block.getY() < world.getMaxHeight() - 1 &&
-				(!isTransparent(block.getRelative(BlockFace.UP)) || isTransparent(block)))
+				(!isTransparent(block.getRelative(BlockFace.UP), waterIsTransparent) || isTransparent(block, waterIsTransparent)))
 		{
 			block = block.getRelative(direction);
 		}
@@ -212,16 +241,12 @@ public class Visualization
 	}
 	
 	//helper method for above.  allows visualization blocks to sit underneath partly transparent blocks like grass and fence
-	private static boolean isTransparent(Block block)
+	private static boolean isTransparent(Block block, boolean waterIsTransparent)
 	{
-		return (	block.getType() == Material.AIR ||
-					block.getType() == Material.LONG_GRASS ||
+		return (	block.getType() != Material.SNOW && (
+		            block.getType() == Material.AIR ||
 					block.getType() == Material.FENCE ||
-					block.getType() == Material.LEAVES ||
-					block.getType() == Material.RED_ROSE ||
-					block.getType() == Material.CHEST ||
-					block.getType() == Material.TORCH ||
-					block.getType() == Material.VINE ||
-					block.getType() == Material.YELLOW_FLOWER );
+					(waterIsTransparent && block.getType() == Material.STATIONARY_WATER) || 
+					block.getType().isTransparent()));
 	}
 }

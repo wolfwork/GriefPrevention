@@ -18,11 +18,14 @@
 
 package me.ryanhamshire.GriefPrevention;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -39,6 +42,7 @@ import org.bukkit.entity.Boat;
 import org.bukkit.entity.Creature;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Hanging;
+import org.bukkit.entity.Horse;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Vehicle;
 import org.bukkit.entity.minecart.PoweredMinecart;
@@ -78,7 +82,7 @@ class PlayerEventHandler implements Listener
 	}
 	
 	//when a player chats, monitor for spam
-	@EventHandler(ignoreCancelled = true, priority = EventPriority.LOWEST)
+	@EventHandler(ignoreCancelled = true, priority = EventPriority.HIGHEST)
 	synchronized void onPlayerChat (AsyncPlayerChatEvent event)
 	{		
 		Player player = event.getPlayer();
@@ -90,11 +94,39 @@ class PlayerEventHandler implements Listener
 		
 		String message = event.getMessage();
 		
-		event.setCancelled(this.handlePlayerChat(player, message, event));
+		boolean muted = this.handlePlayerChat(player, message, event);
+		Set<Player> recipients = event.getRecipients();
+		
+		//muted messages go out to only the sender
+		if(muted)
+		{
+		    recipients.clear();
+		    recipients.add(player);
+		}
+		
+		//soft muted messages go out to all soft muted players
+		else if(this.dataStore.isSoftMuted(player.getUniqueId()))
+		{
+		    Set<Player> recipientsToKeep = new HashSet<Player>();
+		    for(Player recipient : recipients)
+		    {
+		        if(this.dataStore.isSoftMuted(recipient.getUniqueId()))
+		        {
+		            recipientsToKeep.add(recipient);
+		        }
+		        else if(recipient.hasPermission("griefprevention.eavesdrop"))
+		        {
+		            recipient.sendMessage(ChatColor.GRAY + "(Muted " + player.getName() + "): " + message);
+		        }
+		    }
+		    recipients.clear();
+		    recipients.addAll(recipientsToKeep);
+		}
 	}
 	
 	//last chat message shown, regardless of who sent it
 	private String lastChatMessage = "";
+	private long lastChatMessageTimestamp = 0;
 	
 	//number of identical messages in a row
 	private int duplicateMessageCount = 0;
@@ -151,7 +183,8 @@ class PlayerEventHandler implements Listener
 		}
 		
 		//always mute an exact match to the last chat message
-		if(message.equals(this.lastChatMessage))
+		long now = new Date().getTime();
+		if(message.equals(this.lastChatMessage) && now - this.lastChatMessageTimestamp < 750)
 		{
 		    playerData.spamCount += ++this.duplicateMessageCount;
 		    spam = true;
@@ -160,6 +193,7 @@ class PlayerEventHandler implements Listener
 		else
 		{
 		    this.lastChatMessage = message;
+		    this.lastChatMessageTimestamp = now;
 		    this.duplicateMessageCount = 0;
 		}
 		
@@ -167,7 +201,7 @@ class PlayerEventHandler implements Listener
 		message = message.toLowerCase();
 		
 		//check message content and timing		
-		long millisecondsSinceLastMessage = (new Date()).getTime() - playerData.lastMessageTimestamp.getTime();
+		long millisecondsSinceLastMessage = now - playerData.lastMessageTimestamp.getTime();
 		
 		//if the message came too close to the last one
 		if(millisecondsSinceLastMessage < 1500)
@@ -290,10 +324,6 @@ class PlayerEventHandler implements Listener
 				//make a log entry
 				GriefPrevention.AddLogEntry("Muted spam from " + player.getName() + ": " + message);
 				
-				//send a fake message so the player doesn't realize he's muted
-				//less information for spammers = less effective spam filter dodging
-				player.sendMessage("<" + player.getName() + "> " + message);
-				
 				//cancelling the event guarantees other players don't receive the message
 				return true;
 			}		
@@ -415,6 +445,8 @@ class PlayerEventHandler implements Listener
 		}
 	}
 	
+	private ConcurrentHashMap<UUID, Date> lastLoginThisServerSessionMap = new ConcurrentHashMap<UUID, Date>();
+	
 	//when a player attempts to join the server...
 	@EventHandler(priority = EventPriority.HIGHEST)
 	void onPlayerLogin (PlayerLoginEvent event)
@@ -425,29 +457,32 @@ class PlayerEventHandler implements Listener
 		if(GriefPrevention.instance.config_spam_enabled)
 		{
 			//FEATURE: login cooldown to prevent login/logout spam with custom clients
-			
+		    long now = Calendar.getInstance().getTimeInMillis();
+		    
 			//if allowed to join and login cooldown enabled
-			if(GriefPrevention.instance.config_spam_loginCooldownMinutes > 0 && event.getResult() == Result.ALLOWED)
+			if(GriefPrevention.instance.config_spam_loginCooldownSeconds > 0 && event.getResult() == Result.ALLOWED && !player.hasPermission("griefprevention.spam"))
 			{
 				//determine how long since last login and cooldown remaining
-				PlayerData playerData = this.dataStore.getPlayerData(player.getUniqueId());
-				long millisecondsSinceLastLogin = (new Date()).getTime() - playerData.lastLogin.getTime();
-				long minutesSinceLastLogin = millisecondsSinceLastLogin / 1000 / 60;
-				long cooldownRemaining = GriefPrevention.instance.config_spam_loginCooldownMinutes - minutesSinceLastLogin;
-				
-				//if cooldown remaining and player doesn't have permission to spam
-				if(cooldownRemaining > 0 && !player.hasPermission("griefprevention.spam"))
+				Date lastLoginThisSession = lastLoginThisServerSessionMap.get(player.getUniqueId());
+				if(lastLoginThisSession != null)
 				{
-					//DAS BOOT!
-					event.setResult(Result.KICK_OTHER);				
-					event.setKickMessage("You must wait " + cooldownRemaining + " more minutes before logging-in again.");
-					event.disallow(event.getResult(), event.getKickMessage());
-					return;
+    			    long millisecondsSinceLastLogin = now - lastLoginThisSession.getTime();
+    				long secondsSinceLastLogin = millisecondsSinceLastLogin / 1000;
+    				long cooldownRemaining = GriefPrevention.instance.config_spam_loginCooldownSeconds - secondsSinceLastLogin;
+    				
+    				//if cooldown remaining
+    				if(cooldownRemaining > 0)
+    				{
+    					//DAS BOOT!
+    					event.setResult(Result.KICK_OTHER);				
+    					event.setKickMessage("You must wait " + cooldownRemaining + " seconds before logging-in again.");
+    					event.disallow(event.getResult(), event.getKickMessage());
+    					return;
+    				}
 				}
 			}
 			
 			//if logging-in account is banned, remember IP address for later
-			long now = Calendar.getInstance().getTimeInMillis();
 			if(GriefPrevention.instance.config_smartBan && event.getResult() == Result.KICK_BANNED)
 			{
 				this.tempBannedIps.add(new IpBanInfo(event.getAddress(), now + this.MILLISECONDS_IN_DAY, player.getName()));
@@ -459,15 +494,6 @@ class PlayerEventHandler implements Listener
 		playerData.ipAddress = event.getAddress();
 	}
 	
-	//when a player spawns, conditionally apply temporary pvp protection 
-	@EventHandler(ignoreCancelled = true)
-	void onPlayerRespawn (PlayerRespawnEvent event)
-	{
-		PlayerData playerData = GriefPrevention.instance.dataStore.getPlayerData(event.getPlayer().getUniqueId());
-		playerData.lastSpawn = Calendar.getInstance().getTimeInMillis();
-		GriefPrevention.instance.checkPvpProtectionNeeded(event.getPlayer());
-	}
-	
 	//when a player successfully joins the server...
 	@EventHandler(ignoreCancelled = true, priority = EventPriority.HIGHEST)
 	void onPlayerJoin(PlayerJoinEvent event)
@@ -476,11 +502,12 @@ class PlayerEventHandler implements Listener
 		UUID playerID = player.getUniqueId();
 		
 		//note login time
-		long now = Calendar.getInstance().getTimeInMillis();
+		Date nowDate = new Date();
+        long now = nowDate.getTime();
 		PlayerData playerData = this.dataStore.getPlayerData(playerID);
 		playerData.lastSpawn = now;
-		playerData.lastLogin = new Date();
-		this.dataStore.savePlayerData(playerID, playerData);
+		playerData.setLastLogin(nowDate);
+		this.lastLoginThisServerSessionMap.put(playerID, nowDate);
 		
 		//if player has never played on the server before, may need pvp protection
 		if(!player.hasPlayedBefore())
@@ -557,7 +584,19 @@ class PlayerEventHandler implements Listener
 				}
 			}
 		}
+		
+		//in case player has changed his name, on successful login, update UUID > Name mapping
+		GriefPrevention.cacheUUIDNamePair(player.getUniqueId(), player.getName());
 	}
+	
+	//when a player spawns, conditionally apply temporary pvp protection 
+    @EventHandler(ignoreCancelled = true)
+    void onPlayerRespawn (PlayerRespawnEvent event)
+    {
+        PlayerData playerData = GriefPrevention.instance.dataStore.getPlayerData(event.getPlayer().getUniqueId());
+        playerData.lastSpawn = Calendar.getInstance().getTimeInMillis();
+        GriefPrevention.instance.checkPvpProtectionNeeded(event.getPlayer());
+    }
 	
 	//when a player dies...
 	@EventHandler(priority = EventPriority.LOWEST)
@@ -574,15 +613,33 @@ class PlayerEventHandler implements Listener
 		playerData.lastDeathTimeStamp = now;
 	}
 	
+	//when a player gets kicked...
+	@EventHandler(priority = EventPriority.HIGHEST)
+	void onPlayerKicked(PlayerKickEvent event)
+    {
+	    Player player = event.getPlayer();
+	    PlayerData playerData = this.dataStore.getPlayerData(player.getUniqueId());
+	    playerData.wasKicked = true;
+    }
+	
 	//when a player quits...
 	@EventHandler(priority = EventPriority.HIGHEST)
 	void onPlayerQuit(PlayerQuitEvent event)
 	{
-		Player player = event.getPlayer();
+	    Player player = event.getPlayer();
 		PlayerData playerData = this.dataStore.getPlayerData(player.getUniqueId());
+		boolean isBanned;
+		if(playerData.wasKicked)
+		{
+		    isBanned = player.isBanned();
+		}
+		else
+		{
+		    isBanned = false;
+		}
 		
 		//if banned, add IP to the temporary IP ban list
-		if(player.isBanned() && playerData.ipAddress != null)
+		if(isBanned && playerData.ipAddress != null)
 		{
 			long now = Calendar.getInstance().getTimeInMillis(); 
 			this.tempBannedIps.add(new IpBanInfo(playerData.ipAddress, now + this.MILLISECONDS_IN_DAY, player.getName()));
@@ -595,13 +652,16 @@ class PlayerEventHandler implements Listener
 		}
 		
 		//silence notifications when the player is banned
-		if(player.isBanned())
+		if(isBanned)
 		{
 		    event.setQuitMessage(null);
 		}
 		
 		//make sure his data is all saved - he might have accrued some claim blocks while playing that were not saved immediately
-		this.dataStore.savePlayerData(player.getUniqueId(), playerData);
+		else
+		{
+		    this.dataStore.savePlayerData(player.getUniqueId(), playerData);
+		}
 		
 		this.onPlayerDisconnect(event.getPlayer(), event.getQuitMessage());
 	}
@@ -613,7 +673,7 @@ class PlayerEventHandler implements Listener
 		PlayerData playerData = this.dataStore.getPlayerData(playerID);
 		
 		//FEATURE: claims where players have allowed explosions will revert back to not allowing them when the owner logs out
-		for(Claim claim : playerData.claims)
+		for(Claim claim : playerData.getClaims())
 		{
 			claim.areExplosivesAllowed = false;
 		}
@@ -721,8 +781,8 @@ class PlayerEventHandler implements Listener
 		
 		//FEATURE: prevent teleport abuse to win sieges
 		
-		//these rules only apply to non-ender-pearl teleportation
-		if(event.getCause() == TeleportCause.ENDER_PEARL) return;
+		//these rules only apply to siege worlds only
+		if(!GriefPrevention.instance.config_siege_enabledWorlds.contains(player.getWorld())) return;
 		
 		Location source = event.getFrom();
 		Claim sourceClaim = this.dataStore.getClaimAt(source, false, playerData.lastClaim);
@@ -749,12 +809,16 @@ class PlayerEventHandler implements Listener
 	{
 		Player player = event.getPlayer();
 		Entity entity = event.getRightClicked();
-		PlayerData playerData = this.dataStore.getPlayerData(player.getUniqueId());
 		
+		if(!GriefPrevention.instance.claimsEnabledForWorld(entity.getWorld())) return;
+		
+		//allow horse protection to be overridden to allow management from other plugins
+        if (!GriefPrevention.instance.config_claims_protectHorses && entity instanceof Horse) return;
+        
 		//don't allow interaction with item frames in claimed areas without build permission
 		if(entity instanceof Hanging)
 		{
-			String noBuildReason = GriefPrevention.instance.allowBuild(player, entity.getLocation()); 
+			String noBuildReason = GriefPrevention.instance.allowBuild(player, entity.getLocation(), Material.ITEM_FRAME); 
 			if(noBuildReason != null)
 			{
 				GriefPrevention.sendMessage(player, TextMode.Err, noBuildReason);
@@ -763,6 +827,8 @@ class PlayerEventHandler implements Listener
 			}			
 		}
 		
+		PlayerData playerData = this.dataStore.getPlayerData(player.getUniqueId());
+        
 		//don't allow container access during pvp combat
 		if((entity instanceof StorageMinecart || entity instanceof PoweredMinecart))
 		{
@@ -809,18 +875,26 @@ class PlayerEventHandler implements Listener
 						event.setCancelled(true);
 					}
 				}
-				
-				//if the entity is an animal, apply container rules
-				else if(entity instanceof Animals)
-				{
-					if(claim.allowContainers(player) != null)
-					{
-						GriefPrevention.sendMessage(player, TextMode.Err, Messages.NoDamageClaimedEntity, claim.getOwnerName());
-						event.setCancelled(true);
-					}
-				}
 			}
 		}
+		
+		//if the entity is an animal, apply container rules
+        if(GriefPrevention.instance.config_claims_preventTheft && entity instanceof Animals)
+        {
+            //if the entity is in a claim
+            Claim claim = this.dataStore.getClaimAt(entity.getLocation(), false, null);
+            if(claim != null)
+            {
+                if(claim.allowContainers(player) != null)
+                {
+                    String message = GriefPrevention.instance.dataStore.getMessage(Messages.NoDamageClaimedEntity, claim.getOwnerName());
+                    if(player.hasPermission("griefprevention.ignoreclaims"))
+                        message += "  " + GriefPrevention.instance.dataStore.getMessage(Messages.IgnoreClaimsAdvertisement);
+                    GriefPrevention.sendMessage(player, TextMode.Err, message);
+                    event.setCancelled(true);
+                }
+            }
+        }
 		
 		//if preventing theft, prevent leashing claimed creatures
 		if(GriefPrevention.instance.config_claims_preventTheft && entity instanceof Creature && player.getItemInHand().getType() == Material.LEASH)
@@ -902,41 +976,18 @@ class PlayerEventHandler implements Listener
 		}
 	}
 	
-	//block players from entering beds they don't have permission for
-	@EventHandler(ignoreCancelled = true, priority = EventPriority.LOWEST)
-	public void onPlayerBedEnter (PlayerBedEnterEvent bedEvent)
-	{
-		if(!GriefPrevention.instance.config_claims_preventButtonsSwitches) return;
-		
-		Player player = bedEvent.getPlayer();
-		PlayerData playerData = this.dataStore.getPlayerData(player.getUniqueId());
-		Block block = bedEvent.getBed();
-		
-		//if the bed is in a claim 
-		Claim claim = this.dataStore.getClaimAt(block.getLocation(), false, playerData.lastClaim);
-		if(claim != null)
-		{
-		    playerData.lastClaim = claim;
-		    
-			//if the player doesn't have access in that claim, tell him so and prevent him from sleeping in the bed
-			if(claim.allowAccess(player) != null)
-			{
-				bedEvent.setCancelled(true);
-				GriefPrevention.sendMessage(player, TextMode.Err, Messages.NoBedPermission, claim.getOwnerName());
-			}
-		}		
-	}
-	
 	//block use of buckets within other players' claims
 	@EventHandler(ignoreCancelled = true, priority = EventPriority.LOWEST)
 	public void onPlayerBucketEmpty (PlayerBucketEmptyEvent bucketEvent)
 	{
-		Player player = bucketEvent.getPlayer();
+		if(!GriefPrevention.instance.claimsEnabledForWorld(bucketEvent.getBlockClicked().getWorld())) return;
+	    
+	    Player player = bucketEvent.getPlayer();
 		Block block = bucketEvent.getBlockClicked().getRelative(bucketEvent.getBlockFace());
 		int minLavaDistance = 10;
 		
 		//make sure the player is allowed to build at the location
-		String noBuildReason = GriefPrevention.instance.allowBuild(player, block.getLocation());
+		String noBuildReason = GriefPrevention.instance.allowBuild(player, block.getLocation(), Material.WATER);
 		if(noBuildReason != null)
 		{
 			GriefPrevention.sendMessage(player, TextMode.Err, noBuildReason);
@@ -952,12 +1003,12 @@ class PlayerEventHandler implements Listener
 			minLavaDistance = 3;
 		}
 		
-		//otherwise no wilderness dumping (unless underground) in worlds where claims are enabled
-		else if(GriefPrevention.instance.config_claims_enabledWorlds.contains(block.getWorld()))
+		//otherwise no wilderness dumping in creative mode worlds
+		else if(GriefPrevention.instance.creativeRulesApply(block.getLocation()))
 		{
 			if(block.getY() >= GriefPrevention.instance.getSeaLevel(block.getWorld()) - 5 && !player.hasPermission("griefprevention.lava"))
 			{
-				if(bucketEvent.getBucket() == Material.LAVA_BUCKET || GriefPrevention.instance.config_blockWildernessWaterBuckets)
+				if(bucketEvent.getBucket() == Material.LAVA_BUCKET)
 				{
 					GriefPrevention.sendMessage(player, TextMode.Err, Messages.NoWildernessBuckets);
 					bucketEvent.setCancelled(true);
@@ -994,8 +1045,10 @@ class PlayerEventHandler implements Listener
 		Player player = bucketEvent.getPlayer();
 		Block block = bucketEvent.getBlockClicked();
 		
+		if(!GriefPrevention.instance.claimsEnabledForWorld(block.getWorld())) return;
+		
 		//make sure the player is allowed to build at the location
-		String noBuildReason = GriefPrevention.instance.allowBuild(player, block.getLocation());
+		String noBuildReason = GriefPrevention.instance.allowBuild(player, block.getLocation(), Material.AIR);
 		if(noBuildReason != null)
 		{
 			GriefPrevention.sendMessage(player, TextMode.Err, noBuildReason);
@@ -1008,8 +1061,13 @@ class PlayerEventHandler implements Listener
 	@EventHandler(priority = EventPriority.LOWEST)
 	void onPlayerInteract(PlayerInteractEvent event)
 	{
-		Player player = event.getPlayer();
+	    //not interested in left-click-on-air actions
+	    Action action = event.getAction();
+	    if(action == Action.LEFT_CLICK_AIR) return;
+        
+	    Player player = event.getPlayer();
 		Block clickedBlock = event.getClickedBlock(); //null returned here means interacting with air
+		
 		Material clickedBlockType = null;
 		if(clickedBlock != null)
 		{
@@ -1022,7 +1080,7 @@ class PlayerEventHandler implements Listener
 		
 		//apply rule for players trampling tilled soil back to dirt (never allow it)
         //NOTE: that this event applies only to players.  monsters and animals can still trample.
-        if(event.getAction() == Action.PHYSICAL)
+        if(action == Action.PHYSICAL)
         {
             if(clickedBlockType == Material.SOIL)
             {
@@ -1032,48 +1090,52 @@ class PlayerEventHandler implements Listener
             //not tracking any other "physical" interaction events right now
             return;
         }
-		
-		//FEATURE: shovel and stick can be used from a distance away
-        Material itemInHand = player.getItemInHand().getType();
-	    if(clickedBlock == null && (itemInHand == Material.STICK || itemInHand == Material.GOLD_SPADE))
-		{
-			//try to find a far away non-air block along line of sight
-	        clickedBlock = getTargetBlock(player, 50);
-	        clickedBlockType = clickedBlock.getType();
-		}			
-		
-		//if no block, stop here
-		if(clickedBlock == null)
-		{
-			return;
-		}
-		
-		//apply rules for putting out fires (requires build permission)
-		PlayerData playerData = this.dataStore.getPlayerData(player.getUniqueId());
-		if(event.getClickedBlock() != null && event.getClickedBlock().getRelative(event.getBlockFace()).getType() == Material.FIRE)
-		{
-			Claim claim = this.dataStore.getClaimAt(clickedBlock.getLocation(), false, playerData.lastClaim);
-			if(claim != null)
-			{
-				playerData.lastClaim = claim;
-				
-				String noBuildReason = claim.allowBuild(player);
-				if(noBuildReason != null)
-				{
-					event.setCancelled(true);
-					GriefPrevention.sendMessage(player, TextMode.Err, noBuildReason);
-					return;
-				}
-			}
-		}
-		
+        
+        //don't care about left-clicking on most blocks, this is probably a break action
+        PlayerData playerData = null;
+        if(action == Action.LEFT_CLICK_BLOCK && clickedBlock != null)
+        {
+            //exception for blocks on a specific watch list
+            if(!this.onLeftClickWatchList(clickedBlockType) && !GriefPrevention.instance.config_mods_accessTrustIds.Contains(new MaterialInfo(clickedBlock.getTypeId(), clickedBlock.getData(), null)))
+            {
+                //and an exception for putting our fires
+                if(GriefPrevention.instance.config_claims_protectFires && event.getClickedBlock() != null)
+                {
+                    Block adjacentBlock = event.getClickedBlock().getRelative(event.getBlockFace());
+                    if(adjacentBlock.getType() == Material.FIRE)
+                    {
+                        if(playerData == null) playerData = this.dataStore.getPlayerData(player.getUniqueId());
+                        Claim claim = this.dataStore.getClaimAt(clickedBlock.getLocation(), false, playerData.lastClaim);
+                        if(claim != null)
+                        {
+                            playerData.lastClaim = claim;
+                            
+                            String noBuildReason = claim.allowBuild(player, Material.AIR);
+                            if(noBuildReason != null)
+                            {
+                                event.setCancelled(true);
+                                GriefPrevention.sendMessage(player, TextMode.Err, noBuildReason);
+                                player.sendBlockChange(adjacentBlock.getLocation(), adjacentBlock.getTypeId(), adjacentBlock.getData());
+                                return;
+                            }
+                        }
+                    }
+                }
+                
+                return;
+            }
+        }
+        
 		//apply rules for containers and crafting blocks
-		if(	GriefPrevention.instance.config_claims_preventTheft && (
+		if(	clickedBlock != null && GriefPrevention.instance.config_claims_preventTheft && (
 						event.getAction() == Action.RIGHT_CLICK_BLOCK && (
-						clickedBlock.getState() instanceof InventoryHolder ||
+						this.isInventoryHolder(clickedBlock) ||
+						clickedBlockType == Material.ANVIL ||
 						GriefPrevention.instance.config_mods_containerTrustIds.Contains(new MaterialInfo(clickedBlock.getTypeId(), clickedBlock.getData(), null)))))
 		{			
-			//block container use while under siege, so players can't hide items from attackers
+		    if(playerData == null) playerData = this.dataStore.getPlayerData(player.getUniqueId());
+		    
+		    //block container use while under siege, so players can't hide items from attackers
 			if(playerData.siegeData != null)
 			{
 				GriefPrevention.sendMessage(player, TextMode.Err, Messages.SiegeNoContainers);
@@ -1113,12 +1175,15 @@ class PlayerEventHandler implements Listener
 			}
 		}
 		
-		//otherwise apply rules for doors, if configured that way
-		else if((GriefPrevention.instance.config_claims_lockWoodenDoors && clickedBlockType == Material.WOODEN_DOOR) ||
-				(GriefPrevention.instance.config_claims_lockTrapDoors && clickedBlockType == Material.TRAP_DOOR) ||
+		//otherwise apply rules for doors and beds, if configured that way
+		else if( clickedBlock != null && 
+		        (GriefPrevention.instance.config_claims_lockWoodenDoors && clickedBlockType == Material.WOODEN_DOOR) ||
+		        (GriefPrevention.instance.config_claims_preventButtonsSwitches && clickedBlockType == Material.BED_BLOCK) ||
+		        (GriefPrevention.instance.config_claims_lockTrapDoors && clickedBlockType == Material.TRAP_DOOR) ||
 				(GriefPrevention.instance.config_claims_lockFenceGates && clickedBlockType == Material.FENCE_GATE))
 		{
-			Claim claim = this.dataStore.getClaimAt(clickedBlock.getLocation(), false, playerData.lastClaim);
+		    if(playerData == null) playerData = this.dataStore.getPlayerData(player.getUniqueId());
+		    Claim claim = this.dataStore.getClaimAt(clickedBlock.getLocation(), false, playerData.lastClaim);
 			if(claim != null)
 			{
 				playerData.lastClaim = claim;
@@ -1134,12 +1199,14 @@ class PlayerEventHandler implements Listener
 		}
 		
 		//otherwise apply rules for buttons and switches
-		else if(GriefPrevention.instance.config_claims_preventButtonsSwitches && (clickedBlockType == null || clickedBlockType == Material.STONE_BUTTON || clickedBlockType == Material.WOOD_BUTTON || clickedBlockType == Material.LEVER || GriefPrevention.instance.config_mods_accessTrustIds.Contains(new MaterialInfo(clickedBlock.getTypeId(), clickedBlock.getData(), null))))
+		else if(clickedBlock != null && GriefPrevention.instance.config_claims_preventButtonsSwitches && (clickedBlockType == null || clickedBlockType == Material.STONE_BUTTON || clickedBlockType == Material.WOOD_BUTTON || clickedBlockType == Material.LEVER || GriefPrevention.instance.config_mods_accessTrustIds.Contains(new MaterialInfo(clickedBlock.getTypeId(), clickedBlock.getData(), null))))
 		{
-			Claim claim = this.dataStore.getClaimAt(clickedBlock.getLocation(), false, playerData.lastClaim);
+		    if(playerData == null) playerData = this.dataStore.getPlayerData(player.getUniqueId());
+		    Claim claim = this.dataStore.getClaimAt(clickedBlock.getLocation(), false, playerData.lastClaim);
 			if(claim != null)
 			{
-				playerData.lastClaim = claim;
+			    if(playerData == null) playerData = this.dataStore.getPlayerData(player.getUniqueId());
+			    playerData.lastClaim = claim;
 				
 				String noAccessReason = claim.allowAccess(player);
 				if(noAccessReason != null)
@@ -1152,12 +1219,13 @@ class PlayerEventHandler implements Listener
 		}
 		
 		//apply rule for note blocks and repeaters
-		else if(clickedBlockType == Material.NOTE_BLOCK || clickedBlockType == Material.DIODE_BLOCK_ON || clickedBlockType == Material.DIODE_BLOCK_OFF)
+		else if(clickedBlock != null && clickedBlockType == Material.NOTE_BLOCK || clickedBlockType == Material.DIODE_BLOCK_ON || clickedBlockType == Material.DIODE_BLOCK_OFF)
 		{
-			Claim claim = this.dataStore.getClaimAt(clickedBlock.getLocation(), false, playerData.lastClaim);
+		    if(playerData == null) playerData = this.dataStore.getPlayerData(player.getUniqueId());
+		    Claim claim = this.dataStore.getClaimAt(clickedBlock.getLocation(), false, playerData.lastClaim);
 			if(claim != null)
 			{
-				String noBuildReason = claim.allowBuild(player);
+				String noBuildReason = claim.allowBuild(player, clickedBlockType);
 				if(noBuildReason != null)
 				{
 					event.setCancelled(true);
@@ -1171,16 +1239,15 @@ class PlayerEventHandler implements Listener
 		else
 		{
 			//ignore all actions except right-click on a block or in the air
-			Action action = event.getAction();
 			if(action != Action.RIGHT_CLICK_BLOCK && action != Action.RIGHT_CLICK_AIR) return;
 			
 			//what's the player holding?
 			Material materialInHand = player.getItemInHand().getType();		
 			
 			//if it's bonemeal, check for build permission (ink sac == bone meal, must be a Bukkit bug?)
-			if(materialInHand == Material.INK_SACK)
+			if(clickedBlock != null && materialInHand == Material.INK_SACK)
 			{
-				String noBuildReason = GriefPrevention.instance.allowBuild(player, clickedBlock.getLocation());
+				String noBuildReason = GriefPrevention.instance.allowBuild(player, clickedBlock.getLocation(), clickedBlockType);
 				if(noBuildReason != null)
 				{
 					GriefPrevention.sendMessage(player, TextMode.Err, noBuildReason);
@@ -1190,9 +1257,10 @@ class PlayerEventHandler implements Listener
 				return;
 			}
 			
-			else if(materialInHand ==  Material.BOAT)
+			else if(clickedBlock != null && materialInHand ==  Material.BOAT)
 			{
-				Claim claim = this.dataStore.getClaimAt(clickedBlock.getLocation(), false, playerData.lastClaim);
+			    if(playerData == null) playerData = this.dataStore.getPlayerData(player.getUniqueId());
+			    Claim claim = this.dataStore.getClaimAt(clickedBlock.getLocation(), false, playerData.lastClaim);
 				if(claim != null)
 				{
 					String noAccessReason = claim.allowAccess(player);
@@ -1207,10 +1275,10 @@ class PlayerEventHandler implements Listener
 			}
 			
 			//if it's a spawn egg, minecart, or boat, and this is a creative world, apply special rules
-			else if((materialInHand == Material.MONSTER_EGG || materialInHand == Material.MINECART || materialInHand == Material.POWERED_MINECART || materialInHand == Material.STORAGE_MINECART || materialInHand == Material.BOAT) && GriefPrevention.instance.creativeRulesApply(clickedBlock.getLocation()))
+			else if(clickedBlock != null && (materialInHand == Material.MONSTER_EGG || materialInHand == Material.MINECART || materialInHand == Material.POWERED_MINECART || materialInHand == Material.STORAGE_MINECART || materialInHand == Material.BOAT) && GriefPrevention.instance.creativeRulesApply(clickedBlock.getLocation()))
 			{
 				//player needs build permission at this location
-				String noBuildReason = GriefPrevention.instance.allowBuild(player, clickedBlock.getLocation());
+				String noBuildReason = GriefPrevention.instance.allowBuild(player, clickedBlock.getLocation(), Material.MINECART);
 				if(noBuildReason != null)
 				{
 					GriefPrevention.sendMessage(player, TextMode.Err, noBuildReason);
@@ -1219,6 +1287,7 @@ class PlayerEventHandler implements Listener
 				}
 			
 				//enforce limit on total number of entities in this claim
+				if(playerData == null) playerData = this.dataStore.getPlayerData(player.getUniqueId());
 				Claim claim = this.dataStore.getClaimAt(clickedBlock.getLocation(), false, playerData.lastClaim);
 				if(claim == null) return;
 				
@@ -1236,13 +1305,29 @@ class PlayerEventHandler implements Listener
 			//if he's investigating a claim
 			else if(materialInHand == GriefPrevention.instance.config_claims_investigationTool)
 			{
-				//air indicates too far away
+		        //FEATURE: shovel and stick can be used from a distance away
+		        if(action == Action.RIGHT_CLICK_AIR)
+		        {
+		            //try to find a far away non-air block along line of sight
+		            clickedBlock = getTargetBlock(player, 100);
+		            clickedBlockType = clickedBlock.getType();
+		        }           
+		        
+		        //if no block, stop here
+		        if(clickedBlock == null)
+		        {
+		            return;
+		        }
+			    
+			    //air indicates too far away
 				if(clickedBlockType == Material.AIR)
 				{
 					GriefPrevention.sendMessage(player, TextMode.Err, Messages.TooFarAway);
+					Visualization.Revert(player);
 					return;
 				}
 				
+				if(playerData == null) playerData = this.dataStore.getPlayerData(player.getUniqueId());
 				Claim claim = this.dataStore.getClaimAt(clickedBlock.getLocation(), false /*ignore height*/, playerData.lastClaim);
 				
 				//no claim case
@@ -1271,8 +1356,12 @@ class PlayerEventHandler implements Listener
 					//if deleteclaims permission, tell about the player's offline time
 					if(!claim.isAdminClaim() && player.hasPermission("griefprevention.deleteclaims"))
 					{
-						PlayerData otherPlayerData = this.dataStore.getPlayerData(claim.ownerID);
-						Date lastLogin = otherPlayerData.lastLogin;
+						if(claim.parent != null)
+						{
+						    claim = claim.parent;
+						}
+					    PlayerData otherPlayerData = this.dataStore.getPlayerData(claim.ownerID);
+						Date lastLogin = otherPlayerData.getLastLogin();
 						Date now = new Date();
 						long daysElapsed = (now.getTime() - lastLogin.getTime()) / (1000 * 60 * 60 * 24); 
 						
@@ -1291,12 +1380,27 @@ class PlayerEventHandler implements Listener
 			else if(materialInHand != GriefPrevention.instance.config_claims_modificationTool) return;
 			
 			//disable golden shovel while under siege
+			if(playerData == null) playerData = this.dataStore.getPlayerData(player.getUniqueId());
 			if(playerData.siegeData != null)
 			{
 				GriefPrevention.sendMessage(player, TextMode.Err, Messages.SiegeNoShovel);
 				event.setCancelled(true);
 				return;
 			}
+			
+			//FEATURE: shovel and stick can be used from a distance away
+            if(action == Action.RIGHT_CLICK_AIR)
+            {
+                //try to find a far away non-air block along line of sight
+                clickedBlock = getTargetBlock(player, 100);
+                clickedBlockType = clickedBlock.getType();
+            }           
+            
+            //if no block, stop here
+            if(clickedBlock == null)
+            {
+                return;
+            }
 			
 			//can't use the shovel from too far away
 			if(clickedBlockType == Material.AIR)
@@ -1478,6 +1582,7 @@ class PlayerEventHandler implements Listener
 			}
 			
 			//if he's resizing a claim and that claim hasn't been deleted since he started resizing it
+			if(playerData == null) playerData = this.dataStore.getPlayerData(player.getUniqueId());
 			if(playerData.claimResizing != null && playerData.claimResizing.inDataStore)
 			{
 				if(clickedBlock.getLocation().equals(playerData.lastShovelLocation)) return;
@@ -1550,9 +1655,8 @@ class PlayerEventHandler implements Listener
 					}
 				}
 				
-				//special rules for making a top-level claim smaller.  to check this, verifying the old claim's corners are inside the new claim's boundaries.
-				//rule1: in creative mode, top-level claims can't be moved or resized smaller.
-				//rule2: in any mode, shrinking a claim removes any surface fluids
+				//special rule for making a top-level claim smaller.  to check this, verifying the old claim's corners are inside the new claim's boundaries.
+				//rule: in any mode, shrinking a claim removes any surface fluids
 				Claim oldClaim = playerData.claimResizing;
 				boolean smaller = false;
 				if(oldClaim.parent == null)
@@ -1567,13 +1671,6 @@ class PlayerEventHandler implements Listener
 					if(!newClaim.contains(oldClaim.getLesserBoundaryCorner(), true, false) || !newClaim.contains(oldClaim.getGreaterBoundaryCorner(), true, false))
 					{
 						smaller = true;
-						
-						//enforce creative mode rule
-						if(!GriefPrevention.instance.config_claims_allowUnclaimInCreative && !player.hasPermission("griefprevention.deleteclaims") && GriefPrevention.instance.creativeRulesApply(player.getLocation()))
-						{
-							GriefPrevention.sendMessage(player, TextMode.Err, Messages.NoCreativeUnClaim);
-							return;
-						}
 						
 						//remove surface fluids about to be unclaimed
 						oldClaim.removeSurfaceFluids(newClaim);
@@ -1597,7 +1694,7 @@ class PlayerEventHandler implements Listener
 					}
 					
 					//if in a creative mode world and shrinking an existing claim, restore any unclaimed area
-					if(smaller && GriefPrevention.instance.config_claims_autoRestoreUnclaimedCreativeLand && GriefPrevention.instance.creativeRulesApply(oldClaim.getLesserBoundaryCorner()))
+					if(smaller && GriefPrevention.instance.creativeRulesApply(oldClaim.getLesserBoundaryCorner()))
 					{
 						GriefPrevention.sendMessage(player, TextMode.Warn, Messages.UnclaimCleanupWarning);
 						GriefPrevention.instance.restoreClaim(oldClaim, 20L * 60 * 2);  //2 minutes
@@ -1622,6 +1719,7 @@ class PlayerEventHandler implements Listener
 			}
 			
 			//otherwise, since not currently resizing a claim, must be starting a resize, creating a new claim, or creating a subdivision
+			if(playerData == null) playerData = this.dataStore.getPlayerData(player.getUniqueId());
 			Claim claim = this.dataStore.getClaimAt(clickedBlock.getLocation(), true /*ignore height*/, playerData.lastClaim);			
 			
 			//if within an existing claim, he's not creating a new one
@@ -1732,7 +1830,7 @@ class PlayerEventHandler implements Listener
 			if(lastShovelLocation == null)
 			{
 				//if claims are not enabled in this world and it's not an administrative claim, display an error message and stop
-				if(!GriefPrevention.instance.claimsEnabledForWorld(player.getWorld()) && playerData.shovelMode != ShovelMode.Admin)
+				if(!GriefPrevention.instance.claimsEnabledForWorld(player.getWorld()))
 				{
 					GriefPrevention.sendMessage(player, TextMode.Err, Messages.ClaimsDisabledWorld);
 					return;
@@ -1817,14 +1915,48 @@ class PlayerEventHandler implements Listener
 		}
 	}
 	
-	static Block getTargetBlock(Player player, int maxDistance) throws IllegalStateException
+	//determines whether a block type is an inventory holder.  uses a caching strategy to save cpu time
+	private ConcurrentHashMap<Integer, Boolean> inventoryHolderCache = new ConcurrentHashMap<Integer, Boolean>();
+	private boolean isInventoryHolder(Block clickedBlock)
+	{
+	    Integer cacheKey = clickedBlock.getTypeId();
+	    Boolean cachedValue = this.inventoryHolderCache.get(cacheKey);
+	    if(cachedValue != null)
+	    {
+	        return cachedValue.booleanValue();
+	    }
+	    else
+	    {
+	        boolean isHolder = clickedBlock.getState() instanceof InventoryHolder;
+	        this.inventoryHolderCache.put(cacheKey, isHolder);
+	        return isHolder;
+	    }
+    }
+
+    private boolean onLeftClickWatchList(Material material)
+	{
+	    switch(material)
+        {
+            case WOOD_BUTTON:
+            case STONE_BUTTON:
+            case WOOD_DOOR:
+            case LEVER:
+            case DIODE_BLOCK_ON:  //redstone repeater
+            case DIODE_BLOCK_OFF:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    static Block getTargetBlock(Player player, int maxDistance) throws IllegalStateException
 	{
 	    BlockIterator iterator = new BlockIterator(player.getLocation(), player.getEyeHeight(), maxDistance);
 	    Block result = player.getLocation().getBlock().getRelative(BlockFace.UP);
 	    while (iterator.hasNext())
 	    {
 	        result = iterator.next();
-	        if(result.getType() != Material.AIR) return result;
+	        if(result.getType() != Material.AIR && result.getType() != Material.STATIONARY_WATER) return result;
 	    }
 	    
 	    return result;

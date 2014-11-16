@@ -18,13 +18,6 @@
 
 package me.ryanhamshire.GriefPrevention;
 
-import java.util.ArrayList;
-import java.util.Calendar;
-import java.util.Date;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.Map;
-import java.util.Set;
 import java.util.*;
 
 import org.bukkit.*;
@@ -85,6 +78,8 @@ public class Claim
 	//administrative claims are created and maintained by players with the griefprevention.adminclaims permission.
 	public boolean isAdminClaim()
 	{
+		if(this.parent != null) return this.parent.isAdminClaim();
+	    
 		return (this.ownerID == null);
 	}
 	
@@ -112,7 +107,7 @@ public class Claim
 		return true;
 	}
 	
-	//removes any fluids above sea level in a claim
+	//removes any lava above sea level in a claim
 	//exclusionClaim is another claim indicating an sub-area to be excluded from this operation
 	//it may be null
 	public void removeSurfaceFluids(Claim exclusionClaim)
@@ -123,8 +118,8 @@ public class Claim
 		//don't do it for very large claims
 		if(this.getArea() > 10000) return;
 		
-		//don't do it when surface fluids are allowed to be dumped
-		if(!GriefPrevention.instance.config_blockWildernessWaterBuckets) return;
+		//only in creative mode worlds
+		if(!GriefPrevention.instance.creativeRulesApply(this.lesserBoundaryCorner)) return;
 		
 		Location lesser = this.getLesserBoundaryCorner();
 		Location greater = this.getGreaterBoundaryCorner();
@@ -146,7 +141,7 @@ public class Claim
 					Block block = lesser.getWorld().getBlockAt(x, y, z);
 					if(exclusionClaim != null && exclusionClaim.contains(block.getLocation(), true, false)) continue;
 					
-					if(block.getType() == Material.STATIONARY_WATER || block.getType() == Material.STATIONARY_LAVA || block.getType() == Material.LAVA || block.getType() == Material.WATER)
+					if(block.getType() == Material.STATIONARY_LAVA || block.getType() == Material.LAVA)
 					{
 						block.setType(Material.AIR);
 					}
@@ -155,7 +150,7 @@ public class Claim
 		}		
 	}
 	
-	//determines whether or not a claim has surface fluids (lots of water blocks, or any lava blocks)
+	//determines whether or not a claim has surface lava
 	//used to warn players when they abandon their claims about automatic fluid cleanup
 	boolean hasSurfaceFluids()
 	{
@@ -170,7 +165,6 @@ public class Claim
 		//respect sea level in normal worlds
 		if(lesser.getWorld().getEnvironment() == Environment.NORMAL) seaLevel = GriefPrevention.instance.getSeaLevel(lesser.getWorld());
 		
-		int waterCount = 0;
 		for(int x = lesser.getBlockX(); x <= greater.getBlockX(); x++)
 		{
 			for(int z = lesser.getBlockZ(); z <= greater.getBlockZ(); z++)
@@ -180,13 +174,7 @@ public class Claim
 					//dodge the exclusion claim
 					Block block = lesser.getWorld().getBlockAt(x, y, z);
 					
-					if(block.getType() == Material.STATIONARY_WATER || block.getType() == Material.WATER)
-					{
-						waterCount++;
-						if(waterCount > 10) return true;
-					}
-					
-					else if(block.getType() == Material.STATIONARY_LAVA || block.getType() == Material.LAVA)
+					if(block.getType() == Material.STATIONARY_LAVA || block.getType() == Material.LAVA)
 					{
 						return true;
 					}
@@ -316,14 +304,27 @@ public class Claim
 		
 		//permission inheritance for subdivisions
 		if(this.parent != null)
-			return this.parent.allowBuild(player);
+			return this.parent.allowEdit(player);
 		
 		//error message if all else fails
 		return GriefPrevention.instance.dataStore.getMessage(Messages.OnlyOwnersModifyClaims, this.getOwnerName());
 	}
 	
+	private List<Material> placeableFarmingBlocksList = Arrays.asList(
+	        Material.PUMPKIN_STEM,
+	        Material.CROPS,
+	        Material.MELON_STEM,
+	        Material.CARROT,
+	        Material.POTATO,
+	        Material.NETHER_WARTS);
+	    
+    private boolean placeableForFarming(Material material)
+    {
+        return this.placeableFarmingBlocksList.contains(material);
+    }
+	
 	//build permission check
-	public String allowBuild(Player player)
+	public String allowBuild(Player player, Material material)
 	{
 		//if we don't know who's asking, always say no (i've been told some mods can make this happen somehow)
 		if(player == null) return "";
@@ -362,13 +363,24 @@ public class Claim
 		
 		//subdivision permission inheritance
 		if(this.parent != null)
-			return this.parent.allowBuild(player);
+			return this.parent.allowBuild(player, material);
 		
 		//failure message for all other cases
 		String reason = GriefPrevention.instance.dataStore.getMessage(Messages.NoBuildPermission, this.getOwnerName());
 		if(player.hasPermission("griefprevention.ignoreclaims"))
 				reason += "  " + GriefPrevention.instance.dataStore.getMessage(Messages.IgnoreClaimsAdvertisement);
-		return reason;
+		
+		//allow for farming with /containertrust permission
+		if(reason != null && this.allowContainers(player) == null)
+        {
+            //do allow for farming, if player has /containertrust permission
+            if(this.placeableForFarming(material))
+            {
+                return null;
+            }
+        }
+        
+        return reason;
 	}
 	
 	private boolean hasExplicitPermission(Player player, ClaimPermission level)
@@ -432,7 +444,7 @@ public class Claim
 		}
 		
 		//if not under siege, build rules apply
-		return this.allowBuild(player);		
+		return this.allowBuild(player, material);
 	}
 	
 	//access permission check
@@ -627,7 +639,7 @@ public class Claim
 	//excludeSubdivisions = true means that locations inside subdivisions of the claim will return FALSE
 	public boolean contains(Location location, boolean ignoreHeight, boolean excludeSubdivisions)
 	{
-		//not in the same world implies false
+	    //not in the same world implies false
 		if(!location.getWorld().equals(this.lesserBoundaryCorner.getWorld())) return false;
 		
 		int x = location.getBlockX();
@@ -735,25 +747,21 @@ public class Claim
 		if(maxEntities == 0) return GriefPrevention.instance.dataStore.getMessage(Messages.ClaimTooSmallForEntities);
 		
 		//count current entities (ignoring players)
-		Chunk lesserChunk = this.getLesserBoundaryCorner().getChunk();
-		Chunk greaterChunk = this.getGreaterBoundaryCorner().getChunk();
-		
 		int totalEntities = 0;
-		for(int x = lesserChunk.getX(); x <= greaterChunk.getX(); x++)
-			for(int z = lesserChunk.getZ(); z <= greaterChunk.getZ(); z++)
+		ArrayList<Chunk> chunks = this.getChunks();
+		for(Chunk chunk : chunks)
+		{
+			Entity [] entities = chunk.getEntities();
+			for(int i = 0; i < entities.length; i++)
 			{
-				Chunk chunk = lesserChunk.getWorld().getChunkAt(x, z);
-				Entity [] entities = chunk.getEntities();
-				for(int i = 0; i < entities.length; i++)
+				Entity entity = entities[i];
+				if(!(entity instanceof Player) && this.contains(entity.getLocation(), false, false))
 				{
-					Entity entity = entities[i];
-					if(!(entity instanceof Player) && this.contains(entity.getLocation(), false, false))
-					{
-						totalEntities++;
-						if(totalEntities > maxEntities) entity.remove();
-					}
+					totalEntities++;
+					if(totalEntities > maxEntities) entity.remove();
 				}
 			}
+		}
 
 		if(totalEntities > maxEntities) return GriefPrevention.instance.dataStore.getMessage(Messages.TooManyEntitiesInClaim);
 		
@@ -833,4 +841,44 @@ public class Claim
 		
 		return (long)score;
 	}
+
+    public ArrayList<Chunk> getChunks()
+    {
+        ArrayList<Chunk> chunks = new ArrayList<Chunk>();
+        
+        World world = this.getLesserBoundaryCorner().getWorld();
+        Chunk lesserChunk = this.getLesserBoundaryCorner().getChunk();
+        Chunk greaterChunk = this.getGreaterBoundaryCorner().getChunk();
+        
+        for(int x = lesserChunk.getX(); x <= greaterChunk.getX(); x++)
+        {
+            for(int z = lesserChunk.getZ(); z <= greaterChunk.getZ(); z++)
+            {
+                chunks.add(world.getChunkAt(x, z));
+            }
+        }
+        
+        return chunks;
+    }
+
+    public ArrayList<String> getChunkStrings()
+    {
+        ArrayList<String> chunkStrings = new ArrayList<String>();
+        World world = this.getLesserBoundaryCorner().getWorld();
+        int smallX = this.getLesserBoundaryCorner().getBlockX() >> 4;
+        int smallZ = this.getLesserBoundaryCorner().getBlockZ() >> 4;
+		int largeX = this.getGreaterBoundaryCorner().getBlockX() >> 4;
+		int largeZ = this.getGreaterBoundaryCorner().getBlockZ() >> 4;
+		
+		for(int x = smallX; x <= largeX; x++)
+		{
+		    for(int z = smallZ; z <= largeZ; z++)
+		    {
+		        StringBuilder builder = new StringBuilder(String.valueOf(x)).append(world.getName()).append(z);
+		        chunkStrings.add(builder.toString());
+		    }
+		}
+		
+		return chunkStrings;
+    }
 }

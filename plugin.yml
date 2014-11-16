@@ -2,7 +2,7 @@ name: GriefPrevention
 main: me.ryanhamshire.GriefPrevention.GriefPrevention
 softdepend: [Vault, Multiverse-Core, My Worlds, MystCraft, Transporter]
 dev-url: http://dev.bukkit.org/server-mods/grief-prevention
-version: 8.1.8
+version: 8.8
 commands:
    abandonclaim:
       description: Deletes a claim.
@@ -125,9 +125,18 @@ commands:
    claimslist:
       description: Lists information about a player's claim blocks and claims.
       usage: /ClaimsList or /ClaimsList <player>
+      aliases: claimlist
    claimexplosions:
       description: Toggles whether explosives may be used in a specific land claim.
       usage: /ClaimExplosions
+   softmute:
+      description: Toggles whether a player's messages will only reach other soft-muted players.
+      usage: /SoftMute <player>
+      permission: griefprevention.softmute
+   gpreload:
+      description: Reloads Grief Prevention's configuration settings.  Does NOT totally reload the entire plugin.
+      usage: /gpreload
+      permission: griefprevention.reload
 permissions:
     griefprevention.createclaims:
         description: Grants permission to create claims.
@@ -145,6 +154,8 @@ permissions:
             griefprevention.lava: true
             griefprevention.eavesdrop: true
             griefprevention.deathblow: true
+            griefprevention.softmute: true
+            griefprevention.reload: true
     griefprevention.restorenature:
         description: Grants permission to use /RestoreNature.
         default: op
@@ -167,13 +178,19 @@ permissions:
         description: Grants permission to place lava near the surface and outside of claims.
         default: op
     griefprevention.eavesdrop:
-        description: Allows a player to see whispered chat messages (/tell).
+        description: Allows a player to see whispered chat messages (/tell) and softmuted messages.
         default: op
     griefprevention.restorenatureaggressive:
         description: Grants access to /RestoreNatureAggressive and /RestoreNatureFill.
         default: op
     griefprevention.deathblow:
         description: Grants access to /DeathBlow.
+        default: op
+    griefprevention.reload:
+        description: Grants access to /gpreload.
+        default: op
+    griefprevention.softmute:
+        description: Grants access to /SoftMute.
         default: op
     griefprevention.claims:
         description: Grants access to claim-related slash commands.

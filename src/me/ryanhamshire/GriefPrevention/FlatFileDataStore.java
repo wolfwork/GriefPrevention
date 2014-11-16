@@ -127,6 +127,50 @@ public class FlatFileDataStore extends DataStore
 			catch(IOException exception) {}
 		}
 		
+		//if converting up from schema version 0, rename player data files using UUIDs instead of player names
+        //get a list of all the files in the claims data folder
+        if(this.getSchemaVersion() == 0)
+        {
+            files = playerDataFolder.listFiles();
+            ArrayList<String> namesToConvert = new ArrayList<String>();
+            for(File playerFile : files)
+            {
+                namesToConvert.add(playerFile.getName());
+            }
+            
+            //resolve and cache as many as possible through various means
+            try
+            {
+                UUIDFetcher fetcher = new UUIDFetcher(namesToConvert);
+                fetcher.call();
+            }
+            catch(Exception e)
+            {
+                GriefPrevention.AddLogEntry("Failed to resolve a batch of names to UUIDs.  Details:" + e.getMessage());
+                e.printStackTrace();
+            }
+            
+            //rename files
+            for(File playerFile : files)
+            {
+                String currentFilename = playerFile.getName();
+                
+                //try to convert player name to UUID
+                UUID playerID = null;
+                try
+                {
+                    playerID = UUIDFetcher.getUUIDOf(currentFilename);
+                    
+                    //if successful, rename the file using the UUID
+                    if(playerID != null)
+                    {
+                        playerFile.renameTo(new File(playerDataFolder, playerID.toString()));
+                    }
+                }
+                catch(Exception ex){ }
+            }
+        }
+		
 		//load claims data into memory		
 		//get a list of all the files in the claims data folder
 		files = claimDataFolder.listFiles();
@@ -201,7 +245,11 @@ public class FlatFileDataStore extends DataStore
 						    {
 						        ownerID = UUIDFetcher.getUUIDOf(ownerName);
 						    }
-						    catch(Exception ex){ }  //if UUID not found, use NULL
+						    catch(Exception ex)
+						    {
+						        GriefPrevention.AddLogEntry("Couldn't resolve this name to a UUID: " + ownerName + ".");
+                                GriefPrevention.AddLogEntry("  Converted land claim to administrative @ " + lesserBoundaryCorner.toString());
+						    }
 						}
 						else
 						{
@@ -249,30 +297,8 @@ public class FlatFileDataStore extends DataStore
 							//instantiate
 							topLevelClaim = new Claim(lesserBoundaryCorner, greaterBoundaryCorner, ownerID, builderNames, containerNames, accessorNames, managerNames, claimID);
 							
-							//search for another claim overlapping this one
-							Claim conflictClaim = this.getClaimAt(topLevelClaim.lesserBoundaryCorner, true, null);
-							
-							//if there is such a claim, delete this file and move on to the next
-							if(conflictClaim != null)
-							{
-								inStream.close();
-								files[i].delete();
-								line = null;
-								continue;
-							}
-							
-							//otherwise, add this claim to the claims collection
-							else
-							{
-								topLevelClaim.modifiedDate = new Date(files[i].lastModified());
-								int j = 0;
-								while(j < this.claims.size() && !this.claims.get(j).greaterThan(topLevelClaim)) j++;
-								if(j < this.claims.size())
-									this.claims.add(j, topLevelClaim);
-								else
-									this.claims.add(this.claims.size(), topLevelClaim);
-								topLevelClaim.inDataStore = true;								
-							}
+							topLevelClaim.modifiedDate = new Date(files[i].lastModified());
+							this.addClaim(topLevelClaim, false);
 						}
 						
 						//otherwise there's already a top level claim, so this must be a subdivision of that top level claim
@@ -296,7 +322,15 @@ public class FlatFileDataStore extends DataStore
 				//if there's any problem with the file's content, log an error message and skip it
 				catch(Exception e)
 				{
-					 GriefPrevention.AddLogEntry("Unable to load data for claim \"" + files[i].getName() + "\": " + e.toString());
+					if(e.getMessage().contains("World not found"))
+					{
+					    files[i].delete();
+					}
+					else
+					{
+					    GriefPrevention.AddLogEntry("Unable to load data for claim \"" + files[i].getName() + "\": " + e.toString());
+					    e.printStackTrace();
+					}
 				}
 				
 				try
@@ -306,42 +340,6 @@ public class FlatFileDataStore extends DataStore
 				catch(IOException exception) {}
 			}
 		}
-		
-		//if converting up from schema version 0, rename files using UUIDs instead of player names
-		//get a list of all the files in the claims data folder
-        if(this.getSchemaVersion() == 0)
-        {
-            files = playerDataFolder.listFiles();
-            for(File playerFile : files)
-            {
-                //anything starting with an underscore or dollar sign isn't a player, ignore those
-                String currentFilename = playerFile.getName();
-                if(currentFilename.startsWith("$") || currentFilename.startsWith("_")) continue;
-                
-                //try to convert player name to UUID
-                UUID playerID = null;
-                try
-                {
-                    playerID = UUIDFetcher.getUUIDOf(currentFilename);
-                    
-                    //if successful, rename the file using the UUID
-                    if(playerID != null)
-                    {
-                        playerFile.renameTo(new File(playerDataFolder, playerID.toString()));
-                    }
-                    
-                    //otherwise hide it from the data store for the future
-                    else
-                    {
-                        playerFile.renameTo(new File(playerDataFolder, "__" + currentFilename));
-                    }
-                }
-                catch(Exception ex)
-                {
-                    playerFile.renameTo(new File(playerDataFolder, "__" + currentFilename));
-                }
-            }
-        }
 		
 		super.initialize();
 	}
@@ -465,21 +463,14 @@ public class FlatFileDataStore extends DataStore
 		PlayerData playerData = new PlayerData();
 		playerData.playerID = playerID;
 		
-		//if it doesn't exist as a file
-		if(!playerFile.exists())
-		{
-			//create a file with defaults
-			this.savePlayerData(playerID, playerData);
-		}
-		
-		//otherwise, read the file
-		else
+		//if it exists as a file, read the file
+		if(playerFile.exists())
 		{			
 			BufferedReader inStream = null;
 			try
 			{					
 				inStream = new BufferedReader(new FileReader(playerFile.getAbsolutePath()));
-				
+
 				//first line is last login timestamp
 				String lastLoginTimestampString = inStream.readLine();
 				
@@ -487,25 +478,25 @@ public class FlatFileDataStore extends DataStore
 				DateFormat dateFormat = new SimpleDateFormat("yyyy.MM.dd.HH.mm.ss");					
 				try
 				{
-					playerData.lastLogin = dateFormat.parse(lastLoginTimestampString);
+					playerData.setLastLogin(dateFormat.parse(lastLoginTimestampString));
 				}
 				catch(ParseException parseException)
 				{
 					GriefPrevention.AddLogEntry("Unable to load last login for \"" + playerFile.getName() + "\".");
-					playerData.lastLogin = null;
+					playerData.setLastLogin(null);
 				}
 				
 				//second line is accrued claim blocks
 				String accruedBlocksString = inStream.readLine();
 				
 				//convert that to a number and store it
-				playerData.accruedClaimBlocks = Integer.parseInt(accruedBlocksString);
+				playerData.setAccruedClaimBlocks(Integer.parseInt(accruedBlocksString));
 				
 				//third line is any bonus claim blocks granted by administrators
 				String bonusBlocksString = inStream.readLine();					
 				
 				//convert that to a number and store it										
-				playerData.bonusClaimBlocks = Integer.parseInt(bonusBlocksString);
+				playerData.setBonusClaimBlocks(Integer.parseInt(bonusBlocksString));
 				
 				//fourth line is a double-semicolon-delimited list of claims, which is currently ignored
 				//String claimsString = inStream.readLine();
@@ -517,7 +508,8 @@ public class FlatFileDataStore extends DataStore
 			//if there's any problem with the file's content, log an error message
 			catch(Exception e)
 			{
-				 GriefPrevention.AddLogEntry("Unable to load data for player \"" + playerID.toString() + "\": " + e.getMessage());			 
+				 GriefPrevention.AddLogEntry("Unable to load data for player \"" + playerID.toString() + "\": " + e.toString());
+				 e.printStackTrace();
 			}
 			
 			try
@@ -546,26 +538,26 @@ public class FlatFileDataStore extends DataStore
 			outStream = new BufferedWriter(new FileWriter(playerDataFile));
 			
 			//first line is last login timestamp
-			if(playerData.lastLogin == null)playerData.lastLogin = new Date();
+			if(playerData.getLastLogin() == null) playerData.setLastLogin(new Date());
 			DateFormat dateFormat = new SimpleDateFormat("yyyy.MM.dd.HH.mm.ss");
-			outStream.write(dateFormat.format(playerData.lastLogin));
+			outStream.write(dateFormat.format(playerData.getLastLogin()));
 			outStream.newLine();
 			
 			//second line is accrued claim blocks
-			outStream.write(String.valueOf(playerData.accruedClaimBlocks));
+			outStream.write(String.valueOf(playerData.getAccruedClaimBlocks()));
 			outStream.newLine();			
 			
 			//third line is bonus claim blocks
-			outStream.write(String.valueOf(playerData.bonusClaimBlocks));
+			outStream.write(String.valueOf(playerData.getBonusClaimBlocks()));
 			outStream.newLine();						
 			
 			//fourth line is a double-semicolon-delimited list of claims
-			if(playerData.claims.size() > 0)
+			if(playerData.getClaims().size() > 0)
 			{
-				outStream.write(this.locationToString(playerData.claims.get(0).getLesserBoundaryCorner()));
-				for(int i = 1; i < playerData.claims.size(); i++)
+				outStream.write(this.locationToString(playerData.getClaims().get(0).getLesserBoundaryCorner()));
+				for(int i = 1; i < playerData.getClaims().size(); i++)
 				{
-					outStream.write(";;" + this.locationToString(playerData.claims.get(i).getLesserBoundaryCorner()));
+					outStream.write(";;" + this.locationToString(playerData.getClaims().get(i).getLesserBoundaryCorner()));
 				}
 			}
 			outStream.newLine();
@@ -662,7 +654,7 @@ public class FlatFileDataStore extends DataStore
 		for(int i = 0; i < this.claims.size(); i++)
 		{
 			Claim claim = this.claims.get(i);
-			databaseStore.addClaim(claim);
+			databaseStore.addClaim(claim, true);
 		}
 		
 		//migrate groups

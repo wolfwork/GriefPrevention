@@ -95,6 +95,7 @@ public class DatabaseDataStore extends DataStore
 		{
 			GriefPrevention.AddLogEntry("ERROR: Unable to create the necessary database table.  Details:");
 			GriefPrevention.AddLogEntry(e3.getMessage());
+			e3.printStackTrace();
 			throw e3;
 		}
 		
@@ -133,32 +134,124 @@ public class DatabaseDataStore extends DataStore
 			this.nextClaimID = results.getLong("nextid");
 		}
 		
+		if(this.getSchemaVersion() == 0)
+        {
+            try
+            {
+                this.refreshDataConnection();
+                
+                //pull ALL player data from the database
+                statement = this.databaseConnection.createStatement();
+                results = statement.executeQuery("SELECT * FROM griefprevention_playerdata;");
+            
+                //make a list of changes to be made
+                HashMap<String, UUID> changes = new HashMap<String, UUID>();
+                
+                ArrayList<String> namesToConvert = new ArrayList<String>();
+                while(results.next())
+                {
+                    //get the id
+                    String playerName = results.getString("name");
+                    
+                    //add to list of names to convert to UUID
+                    namesToConvert.add(playerName);
+                }
+                
+                //resolve and cache as many as possible through various means
+                try
+                {
+                    UUIDFetcher fetcher = new UUIDFetcher(namesToConvert);
+                    fetcher.call();
+                }
+                catch(Exception e)
+                {
+                    GriefPrevention.AddLogEntry("Failed to resolve a batch of names to UUIDs.  Details:" + e.getMessage());
+                    e.printStackTrace();
+                }
+                
+                //reset results cursor
+                results.beforeFirst();
+                
+                //for each result
+                while(results.next())
+                {
+                    //get the id
+                    String playerName = results.getString("name");
+                    
+                    //try to convert player name to UUID
+                    try
+                    {
+                        UUID playerID = UUIDFetcher.getUUIDOf(playerName);
+                        
+                        //if successful, update the playerdata row by replacing the player's name with the player's UUID
+                        if(playerID != null)
+                        {
+                            changes.put(playerName, playerID);
+                        }
+                    }
+                    //otherwise leave it as-is. no harm done - it won't be requested by name, and this update only happens once.
+                    catch(Exception ex){ }
+                }
+                
+                for(String name : changes.keySet())
+                {
+                    statement = this.databaseConnection.createStatement();
+                    statement.execute("UPDATE griefprevention_playerdata SET name = '" + changes.get(name).toString() + "' WHERE name = '" + name + "';");
+                }
+            }
+            catch(SQLException e)
+            {
+                GriefPrevention.AddLogEntry("Unable to convert player data.  Details:");
+                GriefPrevention.AddLogEntry(e.getMessage());
+                e.printStackTrace();
+            }
+        }
+		
 		//load claims data into memory		
 		results = statement.executeQuery("SELECT * FROM griefprevention_claimdata;");
 		
 		ArrayList<Claim> claimsToRemove = new ArrayList<Claim>();
+		ArrayList<Claim> subdivisionsToLoad = new ArrayList<Claim>();
 		
 		while(results.next())
 		{
 			try
-			{			
-				//skip subdivisions
-				long parentId = results.getLong("parentid");
-				if(parentId != -1) continue;
-				
+			{
+			    //problematic claims will be removed from secondary storage, and never added to in-memory data store
+			    boolean removeClaim = false;
+			    
+			    long parentId = results.getLong("parentid");
 				long claimID = results.getLong("id");
 					
-				String lesserCornerString = results.getString("lessercorner");
-				Location lesserBoundaryCorner = this.locationFromString(lesserCornerString);
-				
-				String greaterCornerString = results.getString("greatercorner");
-				Location greaterBoundaryCorner = this.locationFromString(greaterCornerString);
+				Location lesserBoundaryCorner = null;
+				Location greaterBoundaryCorner = null;
+				String lesserCornerString = "(location not available)";
+				try
+				{
+    				lesserCornerString = results.getString("lessercorner");
+    				lesserBoundaryCorner = this.locationFromString(lesserCornerString);
+    				
+    				String greaterCornerString = results.getString("greatercorner");
+    				greaterBoundaryCorner = this.locationFromString(greaterCornerString);
+				}
+				catch(Exception e)
+				{
+				    if(e.getMessage().contains("World not found"))
+				    {
+				        removeClaim = true;
+				        GriefPrevention.AddLogEntry("Removing a claim in a world which does not exist: " + lesserCornerString);
+				    }
+				    else
+				    {
+				        throw e;
+				    }
+				}
 				
 				String ownerName = results.getString("owner");
 				UUID ownerID = null;
                 if(ownerName.isEmpty())
                 {
-                    ownerID = null;  //administrative land claim
+                    ownerID = null;  //administrative land claim or subdivision
                 }
                 else if(this.getSchemaVersion() < 1)
                 {
@@ -166,7 +259,11 @@ public class DatabaseDataStore extends DataStore
                     {
                         ownerID = UUIDFetcher.getUUIDOf(ownerName);
                     }
-                    catch(Exception ex){ }  //if UUID not found, use NULL
+                    catch(Exception ex)
+                    {
+                        GriefPrevention.AddLogEntry("This owner name did not convert to aUUID: " + ownerName + ".");
+                        GriefPrevention.AddLogEntry("  Converted land claim to administrative @ " + lesserBoundaryCorner.toString());
+                    }
                 }
                 else
                 {
@@ -197,64 +294,21 @@ public class DatabaseDataStore extends DataStore
 				String [] managerNames = managersString.split(";");
 				managerNames = this.convertNameListToUUIDList(managerNames);
 				
-				Claim topLevelClaim = new Claim(lesserBoundaryCorner, greaterBoundaryCorner, ownerID, builderNames, containerNames, accessorNames, managerNames, claimID);
+				Claim claim = new Claim(lesserBoundaryCorner, greaterBoundaryCorner, ownerID, builderNames, containerNames, accessorNames, managerNames, claimID);
 				
-				//search for another claim overlapping this one
-				Claim conflictClaim = this.getClaimAt(topLevelClaim.lesserBoundaryCorner, true, null);
-								
-				//if there is such a claim, mark it for later removal
-				if(conflictClaim != null)
+				if(removeClaim)
 				{
-					claimsToRemove.add(conflictClaim);
-					continue;
+				    claimsToRemove.add(claim);
 				}
-				
-				//otherwise, add this claim to the claims collection
+				else if(parentId == -1)
+				{
+				    //top level claim
+				    this.addClaim(claim, false);
+				}
 				else
 				{
-					int j = 0;
-					while(j < this.claims.size() && !this.claims.get(j).greaterThan(topLevelClaim)) j++;
-					if(j < this.claims.size())
-						this.claims.add(j, topLevelClaim);
-					else
-						this.claims.add(this.claims.size(), topLevelClaim);
-					topLevelClaim.inDataStore = true;								
-				}
-				
-				//look for any subdivisions for this claim
-				Statement statement2 = this.databaseConnection.createStatement();
-				ResultSet childResults = statement2.executeQuery("SELECT * FROM griefprevention_claimdata WHERE parentid=" + topLevelClaim.id + ";");
-				
-				while(childResults.next())
-				{			
-					lesserCornerString = childResults.getString("lessercorner");
-					lesserBoundaryCorner = this.locationFromString(lesserCornerString);
-					
-					greaterCornerString = childResults.getString("greatercorner");
-					greaterBoundaryCorner = this.locationFromString(greaterCornerString);
-					
-					buildersString = childResults.getString("builders");
-					builderNames = buildersString.split(";");
-					builderNames = this.convertNameListToUUIDList(builderNames);
-					
-					containersString = childResults.getString("containers");
-					containerNames = containersString.split(";");
-					containerNames = this.convertNameListToUUIDList(containerNames);
-					
-					accessorsString = childResults.getString("accessors");
-					accessorNames = accessorsString.split(";");
-					accessorNames = this.convertNameListToUUIDList(accessorNames);
-					
-					managersString = childResults.getString("managers");
-					managerNames = managersString.split(";");
-					managerNames = this.convertNameListToUUIDList(managerNames);
-					
-					Claim childClaim = new Claim(lesserBoundaryCorner, greaterBoundaryCorner, null, builderNames, containerNames, accessorNames, managerNames, null);
-					
-					//add this claim to the list of children of the current top level claim
-					childClaim.parent = topLevelClaim;
-					topLevelClaim.children.add(childClaim);
-					childClaim.inDataStore = true;						
+				    //subdivision
+				    subdivisionsToLoad.add(claim);
 				}
 			}
 			catch(SQLException e)
@@ -264,60 +318,28 @@ public class DatabaseDataStore extends DataStore
 			}
 		}
 		
+		//add subdivisions to their parent claims
+        for(Claim childClaim : subdivisionsToLoad)
+        {
+            //find top level claim parent
+            Claim topLevelClaim = this.getClaimAt(childClaim.getLesserBoundaryCorner(), true, null);
+            
+            if(topLevelClaim == null)
+            {
+                claimsToRemove.add(childClaim);
+                GriefPrevention.AddLogEntry("Removing orphaned claim subdivision: " + childClaim.getLesserBoundaryCorner().toString());
+                continue;
+            }
+            
+            //add this claim to the list of children of the current top level claim
+            childClaim.parent = topLevelClaim;
+            topLevelClaim.children.add(childClaim);
+            childClaim.inDataStore = true;
+        }
+		
 		for(int i = 0; i < claimsToRemove.size(); i++)
 		{
 			this.deleteClaimFromSecondaryStorage(claimsToRemove.get(i));
-		}
-		
-		if(this.getSchemaVersion() == 0)
-		{
-		    try
-	        {
-	            this.refreshDataConnection();
-	            
-	            //pull ALL player data from the database
-	            statement = this.databaseConnection.createStatement();
-	            results = statement.executeQuery("SELECT * FROM griefprevention_playerdata;");
-	        
-	            //make a list of changes to be made
-	            HashMap<String, UUID> changes = new HashMap<String, UUID>();
-	            
-	            //for each result
-	            while(results.next())
-	            {
-	                //get the id
-	                String playerName = results.getString("name");
-	                
-	                //ignore groups
-	                if(playerName.startsWith("$")) continue;
-	                
-	                //try to convert player name to UUID
-	                try
-	                {
-	                    UUID playerID = UUIDFetcher.getUUIDOf(playerName);
-	                    
-	                    //if successful, update the playerdata row by replacing the player's name with the player's UUID
-	                    if(playerID != null)
-	                    {
-	                        changes.put(playerName, playerID);
-	                    }
-	                }
-	                //otherwise leave it as-is. no harm done - it won't be requested by name, and this update only happens once.
-	                catch(Exception ex){ }
-	            }
-	            
-	            for(String name : changes.keySet())
-	            {
-	                statement = this.databaseConnection.createStatement();
-                    statement.execute("UPDATE griefprevention_playerdata SET name = '" + changes.get(name).toString() + "' WHERE name = '" + name + "';");
-	            }
-	        }
-	        catch(SQLException e)
-	        {
-	            GriefPrevention.AddLogEntry("Unable to convert player data.  Details:");
-	            GriefPrevention.AddLogEntry(e.getMessage());
-	            e.printStackTrace();
-	        }
 		}
 		
 		super.initialize();
@@ -433,22 +455,27 @@ public class DatabaseDataStore extends DataStore
 		}
 	}
 	
-	//deletes a top level claim from the database
+	//deletes a claim from the database
 	@Override
 	synchronized void deleteClaimFromSecondaryStorage(Claim claim)
 	{
-		try
+	    try
 		{
 			this.refreshDataConnection();
-			
+
+						
 			Statement statement = this.databaseConnection.createStatement();
-			statement.execute("DELETE FROM griefprevention_claimdata WHERE id=" + claim.id + ";");			
-			statement.execute("DELETE FROM griefprevention_claimdata WHERE parentid=" + claim.id + ";");
+			statement.execute("DELETE FROM griefprevention_claimdata WHERE lessercorner='" + this.locationToString(claim.lesserBoundaryCorner) + "' AND greatercorner = '" + this.locationToString(claim.greaterBoundaryCorner) + "';");
+			if(claim.id != -1)
+			{
+			    statement.execute("DELETE FROM griefprevention_claimdata WHERE parentid=" + claim.id + ";");
+			}
 		}
 		catch(SQLException e)
 		{
-			GriefPrevention.AddLogEntry("Unable to delete data for claim at " + this.locationToString(claim.lesserBoundaryCorner) + ".  Details:");
+			GriefPrevention.AddLogEntry("Unable to delete data for claim " + claim.id + ".  Details:");
 			GriefPrevention.AddLogEntry(e.getMessage());
+			e.printStackTrace();
 		}
 	}
 	
@@ -465,18 +492,12 @@ public class DatabaseDataStore extends DataStore
 			Statement statement = this.databaseConnection.createStatement();
 			ResultSet results = statement.executeQuery("SELECT * FROM griefprevention_playerdata WHERE name='" + playerID.toString() + "';");
 		
-			//if there's no data for this player, create it with defaults
-			if(!results.next())
-			{
-				this.savePlayerData(playerID, playerData);
-			}
-			
-			//otherwise, just read from the database
-			else
+			//if data for this player exists, use it
+			if(results.next())
 			{			
-				playerData.lastLogin = results.getTimestamp("lastlogin");
-				playerData.accruedClaimBlocks = results.getInt("accruedblocks");
-				playerData.bonusClaimBlocks = results.getInt("bonusblocks");				
+				playerData.setLastLogin(results.getTimestamp("lastlogin"));
+				playerData.setAccruedClaimBlocks(results.getInt("accruedblocks"));
+				playerData.setBonusClaimBlocks(results.getInt("bonusblocks"));				
 			}
 		}
 		catch(SQLException e)
@@ -505,11 +526,12 @@ public class DatabaseDataStore extends DataStore
 			this.refreshDataConnection();
 			
 			SimpleDateFormat sqlFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
-			String dateString = sqlFormat.format(playerData.lastLogin);
+			String dateString = sqlFormat.format(playerData.getLastLogin());
 			
 			Statement statement = databaseConnection.createStatement();
 			statement.execute("DELETE FROM griefprevention_playerdata WHERE name='" + playerID.toString() + "';");
-			statement.execute("INSERT INTO griefprevention_playerdata (name, lastlogin, accruedblocks, bonusblocks) VALUES ('" + playerID.toString() + "', '" + dateString + "', " + playerData.accruedClaimBlocks + ", " + playerData.bonusClaimBlocks + ");");
+			statement = databaseConnection.createStatement();
+			statement.execute("INSERT INTO griefprevention_playerdata (name, lastlogin, accruedblocks, bonusblocks) VALUES ('" + playerID.toString() + "', '" + dateString + "', " + playerData.getAccruedClaimBlocks() + ", " + playerData.getBonusClaimBlocks() + ");");
 		}
 		catch(SQLException e)
 		{
@@ -551,7 +573,7 @@ public class DatabaseDataStore extends DataStore
 		//group bonus blocks are stored in the player data table, with player name = $groupName
 		String playerName = "$" + groupName;
 		PlayerData playerData = new PlayerData();
-		playerData.bonusClaimBlocks = currentValue;
+		playerData.setBonusClaimBlocks(currentValue);
 		
 		this.savePlayerData(playerName, playerData);
 	}
