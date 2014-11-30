@@ -22,6 +22,7 @@ import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Calendar;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.UUID;
@@ -78,6 +79,7 @@ public class GriefPrevention extends JavaPlugin
 	public boolean config_claims_enderPearlsRequireAccessTrust;		//whether teleporting into a claim with a pearl requires access trust
 	
 	public int config_claims_initialBlocks;							//the number of claim blocks a new player starts with
+	public double config_claims_abandonReturnRatio;                 //the portion of claim blocks returned to a player when a claim is abandoned
 	public int config_claims_blocksAccruedPerHour;					//how many additional blocks players get each hour of play (can be zero)
 	public int config_claims_maxAccruedBlocks;						//the limit on accrued blocks (over time).  doesn't limit purchased or admin-gifted blocks 
 	public int config_claims_maxDepth;								//limit on how deep claims can go
@@ -301,6 +303,37 @@ public class GriefPrevention extends JavaPlugin
 			}
 		}
 		
+		int playersCached = 0;
+		OfflinePlayer [] offlinePlayers = this.getServer().getOfflinePlayers();
+		long now = System.currentTimeMillis();
+		final long millisecondsPerDay = 1000 * 60 * 60 * 24;
+		for(OfflinePlayer player : offlinePlayers)
+		{
+		    try
+		    {
+    		    String playerName = player.getName();
+    		    UUID playerID = player.getUniqueId();
+    		    if(playerName == null || playerID == null) continue;
+    		    long lastSeen = player.getLastPlayed();
+    		    
+    		    //if the player has been seen in the last 30 days, cache his name/UUID pair
+    		    long diff = now - lastSeen;
+    		    long daysDiff = diff / millisecondsPerDay;
+    		    if(daysDiff <= 30)
+    		    {
+    		        this.playerNameToIDMap.put(playerName, playerID);
+    		        this.playerNameToIDMap.put(playerName.toLowerCase(), playerID);
+    		        playersCached++;
+    		    }
+		    }
+		    catch(Exception e)
+		    {
+		        e.printStackTrace();
+		    }
+		}
+		
+		AddLogEntry("Cached " + playersCached + " recent players.");
+		
 		AddLogEntry("Boot finished.");
 	}
 	
@@ -465,6 +498,7 @@ public class GriefPrevention extends JavaPlugin
         this.config_claims_initialBlocks = config.getInt("GriefPrevention.Claims.InitialBlocks", 100);
         this.config_claims_blocksAccruedPerHour = config.getInt("GriefPrevention.Claims.BlocksAccruedPerHour", 100);
         this.config_claims_maxAccruedBlocks = config.getInt("GriefPrevention.Claims.MaxAccruedBlocks", 80000);
+        this.config_claims_abandonReturnRatio = config.getDouble("GriefPrevention.Claims.AbandonReturnRatio", 1);
         this.config_claims_automaticClaimsForNewPlayersRadius = config.getInt("GriefPrevention.Claims.AutomaticNewPlayerClaimsRadius", 4);
         this.config_claims_claimsExtendIntoGroundDistance = config.getInt("GriefPrevention.Claims.ExtendIntoGroundDistance", 5);
         this.config_claims_creationRequiresPermission = config.getBoolean("GriefPrevention.Claims.CreationRequiresPermission", false);
@@ -709,6 +743,7 @@ public class GriefPrevention extends JavaPlugin
         outConfig.set("GriefPrevention.Claims.InitialBlocks", this.config_claims_initialBlocks);
         outConfig.set("GriefPrevention.Claims.BlocksAccruedPerHour", this.config_claims_blocksAccruedPerHour);
         outConfig.set("GriefPrevention.Claims.MaxAccruedBlocks", this.config_claims_maxAccruedBlocks);
+        outConfig.set("GriefPrevention.Claims.AbandonReturnRatio", this.config_claims_abandonReturnRatio);
         outConfig.set("GriefPrevention.Claims.AutomaticNewPlayerClaimsRadius", this.config_claims_automaticClaimsForNewPlayersRadius);
         outConfig.set("GriefPrevention.Claims.ExtendIntoGroundDistance", this.config_claims_claimsExtendIntoGroundDistance);
         outConfig.set("GriefPrevention.Claims.CreationRequiresPermission", this.config_claims_creationRequiresPermission);
@@ -887,6 +922,12 @@ public class GriefPrevention extends JavaPlugin
 				return true;
 			}
 			
+			//adjust claim blocks
+			for(Claim claim : playerData.getClaims())
+			{
+			    playerData.setAccruedClaimBlocks(playerData.getAccruedClaimBlocks() - (int)Math.ceil((claim.getArea() * (1 - this.config_claims_abandonReturnRatio))));
+			}
+			
 			//delete them
 			this.dataStore.deleteClaimsForPlayer(player.getUniqueId(), false);
 			
@@ -977,10 +1018,10 @@ public class GriefPrevention extends JavaPlugin
 				return true;
 			}
 			
-			OfflinePlayer targetPlayer = this.resolvePlayerByName(args[0], true);
+			OfflinePlayer targetPlayer = this.resolvePlayerByName(args[0]);
 			if(targetPlayer == null)
 			{
-				GriefPrevention.sendMessage(player, TextMode.Err, Messages.PlayerNotFound);
+				GriefPrevention.sendMessage(player, TextMode.Err, Messages.PlayerNotFound2);
 				return true;
 			}
 			
@@ -1063,7 +1104,7 @@ public class GriefPrevention extends JavaPlugin
 			
 			player.sendMessage(permissions.toString());
 			permissions = new StringBuilder();
-			permissions.append(ChatColor.BLUE + "A :");
+			permissions.append(ChatColor.BLUE + "A:");
 				
 			if(accessors.size() > 0)
 			{
@@ -1114,10 +1155,10 @@ public class GriefPrevention extends JavaPlugin
 				//validate player argument or group argument
 				if(!args[0].startsWith("[") || !args[0].endsWith("]"))
 				{
-					otherPlayer = this.resolvePlayerByName(args[0], true);
+					otherPlayer = this.resolvePlayerByName(args[0]);
 					if(!clearPermissions && otherPlayer == null && !args[0].equals("public"))
 					{
-						GriefPrevention.sendMessage(player, TextMode.Err, Messages.PlayerNotFound);
+						GriefPrevention.sendMessage(player, TextMode.Err, Messages.PlayerNotFound2);
 						return true;
 					}
 					
@@ -1545,10 +1586,10 @@ public class GriefPrevention extends JavaPlugin
 			if(args.length != 1) return false;
 			
 			//try to find that player
-			OfflinePlayer otherPlayer = this.resolvePlayerByName(args[0], true);
+			OfflinePlayer otherPlayer = this.resolvePlayerByName(args[0]);
 			if(otherPlayer == null)
 			{
-				GriefPrevention.sendMessage(player, TextMode.Err, Messages.PlayerNotFound);
+				GriefPrevention.sendMessage(player, TextMode.Err, Messages.PlayerNotFound2);
 				return true;
 			}
 			
@@ -1595,10 +1636,10 @@ public class GriefPrevention extends JavaPlugin
 			//otherwise try to find the specified player
 			else
 			{
-				otherPlayer = this.resolvePlayerByName(args[0], true);
+				otherPlayer = this.resolvePlayerByName(args[0]);
 				if(otherPlayer == null)
 				{
-					GriefPrevention.sendMessage(player, TextMode.Err, Messages.PlayerNotFound);
+					GriefPrevention.sendMessage(player, TextMode.Err, Messages.PlayerNotFound2);
 					return true;
 				}
 			}
@@ -1632,7 +1673,7 @@ public class GriefPrevention extends JavaPlugin
 			Player targetPlayer = this.getServer().getPlayer(args[0]);
 			if(targetPlayer == null)
 			{
-				GriefPrevention.sendMessage(player, TextMode.Err, Messages.PlayerNotFound);
+				GriefPrevention.sendMessage(player, TextMode.Err, Messages.PlayerNotFound2);
 				return true;
 			}
 			
@@ -1643,7 +1684,7 @@ public class GriefPrevention extends JavaPlugin
 				recipientPlayer = this.getServer().getPlayer(args[1]);
 				if(recipientPlayer == null)
 				{
-					GriefPrevention.sendMessage(player, TextMode.Err, Messages.PlayerNotFound);
+					GriefPrevention.sendMessage(player, TextMode.Err, Messages.PlayerNotFound2);
 					return true;
 				}
 			}
@@ -1736,10 +1777,10 @@ public class GriefPrevention extends JavaPlugin
 			}
 			
 			//otherwise, find the specified player
-			OfflinePlayer targetPlayer = this.resolvePlayerByName(args[0], true);
+			OfflinePlayer targetPlayer = this.resolvePlayerByName(args[0]);
 			if(targetPlayer == null)
 			{
-				GriefPrevention.sendMessage(player, TextMode.Err, Messages.PlayerNotFound);
+				GriefPrevention.sendMessage(player, TextMode.Err, Messages.PlayerNotFound2);
 				return true;
 			}
 			
@@ -1838,7 +1879,7 @@ public class GriefPrevention extends JavaPlugin
 				defender = this.getServer().getPlayer(args[0]);
 				if(defender == null)
 				{
-					GriefPrevention.sendMessage(player, TextMode.Err, Messages.PlayerNotFound);
+					GriefPrevention.sendMessage(player, TextMode.Err, Messages.PlayerNotFound2);
 					return true;
 				}
 			}
@@ -1923,10 +1964,10 @@ public class GriefPrevention extends JavaPlugin
 		    if(args.length != 1) return false;
 		    
 		    //find the specified player
-            OfflinePlayer targetPlayer = this.resolvePlayerByName(args[0], true);
+            OfflinePlayer targetPlayer = this.resolvePlayerByName(args[0]);
             if(targetPlayer == null)
             {
-                GriefPrevention.sendMessage(player, TextMode.Err, Messages.PlayerNotFound);
+                GriefPrevention.sendMessage(player, TextMode.Err, Messages.PlayerNotFound2);
                 return true;
             }
             
@@ -1946,7 +1987,7 @@ public class GriefPrevention extends JavaPlugin
 		
 		else if(cmd.getName().equalsIgnoreCase("gpreload"))
 		{
-		    this.reloadConfig();
+		    this.loadConfig();
 		    if(player != null)
 		    {
 		        GriefPrevention.sendMessage(player, TextMode.Success, "Configuration updated.  If you have updated your Grief Prevention JAR, you still need to /reload or reboot your server.");
@@ -2017,6 +2058,9 @@ public class GriefPrevention extends JavaPlugin
 				GriefPrevention.instance.restoreClaim(claim, 20L * 60 * 2);
 			}
 			
+			//adjust claim blocks
+			playerData.setAccruedClaimBlocks(playerData.getAccruedClaimBlocks() - (int)Math.ceil((claim.getArea() * (1 - this.config_claims_abandonReturnRatio))));
+			
 			//tell the player how many claim blocks he has left
 			int remainingBlocks = playerData.getRemainingClaimBlocks();
 			GriefPrevention.sendMessage(player, TextMode.Success, Messages.AbandonSuccess, String.valueOf(remainingBlocks));
@@ -2058,10 +2102,10 @@ public class GriefPrevention extends JavaPlugin
 		
 		else
 		{		
-			otherPlayer = this.resolvePlayerByName(recipientName, false);
+			otherPlayer = this.resolvePlayerByName(recipientName);
 			if(otherPlayer == null && !recipientName.equals("public") && !recipientName.equals("all"))
 			{
-				GriefPrevention.sendMessage(player, TextMode.Err, Messages.PlayerNotFound);
+				GriefPrevention.sendMessage(player, TextMode.Err, Messages.PlayerNotFound2);
 				return;
 			}
 			
@@ -2203,7 +2247,8 @@ public class GriefPrevention extends JavaPlugin
 	}
 
 	//helper method to resolve a player by name
-	private OfflinePlayer resolvePlayerByName(String name, boolean searchOffline) 
+	ConcurrentHashMap<String, UUID> playerNameToIDMap = new ConcurrentHashMap<String, UUID>();
+	private OfflinePlayer resolvePlayerByName(String name) 
 	{
 		//try online players first
 		Player targetPlayer = this.getServer().getPlayerExact(name);
@@ -2212,22 +2257,22 @@ public class GriefPrevention extends JavaPlugin
 		targetPlayer = this.getServer().getPlayer(name);
         if(targetPlayer != null) return targetPlayer;
         
-        OfflinePlayer bestMatch = null;
-        if(searchOffline)
+        UUID bestMatchID = null;
+        
+        //try exact match first
+        bestMatchID = this.playerNameToIDMap.get(name);
+        
+        //if failed, try ignore case
+        if(bestMatchID == null)
         {
-            //then search offline players
-    		OfflinePlayer [] players = this.getServer().getOfflinePlayers();
-    		for(int i = 0; i < players.length; i++)
-            {
-                if(players[i].getName() != null && players[i].getName().equalsIgnoreCase(name))
-                {
-                    bestMatch = players[i];
-                    if(bestMatch.getName().equals(name)) return bestMatch;
-                }
-            }
+            bestMatchID = this.playerNameToIDMap.get(name.toLowerCase());
         }
-		
-		return bestMatch;
+        if(bestMatchID == null)
+        {
+            return null;
+        }
+
+		return this.getServer().getOfflinePlayer(bestMatchID);
 	}
 
 	//helper method to resolve a player name from the player's UUID
@@ -2277,7 +2322,11 @@ public class GriefPrevention extends JavaPlugin
         //limit memory footprint
         if(GriefPrevention.uuidToNameMap.size() >= 500) GriefPrevention.uuidToNameMap.clear();
         
-        GriefPrevention.uuidToNameMap.put(playerID, playerName);        
+        GriefPrevention.uuidToNameMap.put(playerID, playerName);  
+        
+        //always store the reverse mapping
+        GriefPrevention.instance.playerNameToIDMap.put(playerName, playerID);
+        GriefPrevention.instance.playerNameToIDMap.put(playerName.toLowerCase(), playerID);
     }
 
     //string overload for above helper

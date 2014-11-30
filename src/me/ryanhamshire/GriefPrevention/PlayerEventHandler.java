@@ -627,7 +627,8 @@ class PlayerEventHandler implements Listener
 	void onPlayerQuit(PlayerQuitEvent event)
 	{
 	    Player player = event.getPlayer();
-		PlayerData playerData = this.dataStore.getPlayerData(player.getUniqueId());
+		UUID playerID = player.getUniqueId();
+	    PlayerData playerData = this.dataStore.getPlayerData(playerID);
 		boolean isBanned;
 		if(playerData.wasKicked)
 		{
@@ -663,37 +664,22 @@ class PlayerEventHandler implements Listener
 		    this.dataStore.savePlayerData(player.getUniqueId(), playerData);
 		}
 		
-		this.onPlayerDisconnect(event.getPlayer(), event.getQuitMessage());
-	}
-	
-	//helper for above
-	private void onPlayerDisconnect(Player player, String notificationMessage)
-	{
-		UUID playerID = player.getUniqueId();
-		PlayerData playerData = this.dataStore.getPlayerData(playerID);
-		
-		//FEATURE: claims where players have allowed explosions will revert back to not allowing them when the owner logs out
-		for(Claim claim : playerData.getClaims())
-		{
-			claim.areExplosivesAllowed = false;
-		}
-		
 		//FEATURE: players in pvp combat when they log out will die
-		if(GriefPrevention.instance.config_pvp_punishLogout && playerData.inPvpCombat())
-		{
-			player.setHealth(0);
-		}
-		
-		//FEATURE: during a siege, any player who logs out dies and forfeits the siege
-		
-		//if player was involved in a siege, he forfeits
-		if(playerData.siegeData != null)
-		{
-			if(player.getHealth() > 0) player.setHealth(0);  //might already be zero from above, this avoids a double death message
-		}
-		
-		//drop data about this player
-		this.dataStore.clearCachedPlayerData(playerID);
+        if(GriefPrevention.instance.config_pvp_punishLogout && playerData.inPvpCombat())
+        {
+            player.setHealth(0);
+        }
+        
+        //FEATURE: during a siege, any player who logs out dies and forfeits the siege
+        
+        //if player was involved in a siege, he forfeits
+        if(playerData.siegeData != null)
+        {
+            if(player.getHealth() > 0) player.setHealth(0);  //might already be zero from above, this avoids a double death message
+        }
+        
+        //drop data about this player
+        this.dataStore.clearCachedPlayerData(playerID);
 	}
 	
 	//determines whether or not a login or logout notification should be silenced, depending on how many there have been in the last minute
@@ -1051,6 +1037,10 @@ class PlayerEventHandler implements Listener
 		String noBuildReason = GriefPrevention.instance.allowBuild(player, block.getLocation(), Material.AIR);
 		if(noBuildReason != null)
 		{
+		    //exemption for cow milking (permissions will be handled by player interact with entity event instead)
+		    Material blockType = block.getType();
+		    if(blockType == Material.AIR || blockType.isSolid()) return;
+		    
 			GriefPrevention.sendMessage(player, TextMode.Err, noBuildReason);
 			bucketEvent.setCancelled(true);
 			return;
@@ -1205,7 +1195,6 @@ class PlayerEventHandler implements Listener
 		    Claim claim = this.dataStore.getClaimAt(clickedBlock.getLocation(), false, playerData.lastClaim);
 			if(claim != null)
 			{
-			    if(playerData == null) playerData = this.dataStore.getPlayerData(player.getUniqueId());
 			    playerData.lastClaim = claim;
 				
 				String noAccessReason = claim.allowAccess(player);
@@ -1242,7 +1231,8 @@ class PlayerEventHandler implements Listener
 			if(action != Action.RIGHT_CLICK_BLOCK && action != Action.RIGHT_CLICK_AIR) return;
 			
 			//what's the player holding?
-			Material materialInHand = player.getItemInHand().getType();		
+			ItemStack itemInHand = player.getItemInHand();
+			Material materialInHand = itemInHand.getType();		
 			
 			//if it's bonemeal, check for build permission (ink sac == bone meal, must be a Bukkit bug?)
 			if(clickedBlock != null && materialInHand == Material.INK_SACK)
@@ -1375,6 +1365,33 @@ class PlayerEventHandler implements Listener
 				
 				return;
 			}
+			
+			//if holding a non-vanilla item
+			else if(Material.getMaterial(itemInHand.getTypeId()) == null)
+            {
+                //assume it's a long range tool and project out ahead
+                if(action == Action.RIGHT_CLICK_AIR)
+                {
+                    //try to find a far away non-air block along line of sight
+                    clickedBlock = getTargetBlock(player, 100);
+                }
+                
+                //if target is claimed, require build trust permission
+                if(playerData == null) playerData = this.dataStore.getPlayerData(player.getUniqueId());
+                Claim claim = this.dataStore.getClaimAt(clickedBlock.getLocation(), false, playerData.lastClaim);
+                if(claim != null)
+                {
+                    String reason = claim.allowBreak(player, Material.AIR);
+                    if(reason != null)
+                    {
+                        GriefPrevention.sendMessage(player, TextMode.Err, reason);
+                        event.setCancelled(true);
+                        return;
+                    }
+                }
+                
+                return;
+            }
 			
 			//if it's a golden shovel
 			else if(materialInHand != GriefPrevention.instance.config_claims_modificationTool) return;
@@ -1924,6 +1941,7 @@ class PlayerEventHandler implements Listener
 	    if(cachedValue != null)
 	    {
 	        return cachedValue.booleanValue();
+	        
 	    }
 	    else
 	    {

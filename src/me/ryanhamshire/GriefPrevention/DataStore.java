@@ -457,8 +457,7 @@ public abstract class DataStore
 			this.playerNameToPlayerDataMap.put(playerID, playerData);
 		}
 		
-		//try the hash map again.  if it's STILL not there, we have a bug to fix
-		return this.playerNameToPlayerDataMap.get(playerID);
+		return playerData;
 	}
 	
 	abstract PlayerData getPlayerDataFromStorage(UUID playerID);
@@ -566,12 +565,7 @@ public abstract class DataStore
 	//gets a unique, persistent identifier string for a chunk
 	private String getChunkString(Location location)
 	{
-        StringBuilder builder = new StringBuilder(
-            String.valueOf(location.getBlockX() >> 4))
-            .append(location.getWorld().getName())
-            .append(location.getBlockZ() >> 4);
-
-        return builder.toString();
+        return (location.getBlockX() >> 4) + location.getWorld().getName() + (location.getBlockZ() >> 4);
     }
 	
     //creates a claim.
@@ -682,15 +676,13 @@ public abstract class DataStore
         //ensure player data is already read from file before trying to save
         playerData.getAccruedClaimBlocks();
         playerData.getClaims();
+        
         this.asyncSavePlayerData(playerID, playerData);
     }
 	
 	//saves changes to player data to secondary storage.  MUST be called after you're done making changes, otherwise a reload will lose them
 	public void savePlayerData(UUID playerID, PlayerData playerData)
 	{
-	    //ensure player data is already read from file before trying to save
-	    playerData.getAccruedClaimBlocks();
-	    playerData.getClaims();
 	    new SavePlayerDataThread(playerID, playerData).start();
 	}
 	
@@ -1019,7 +1011,7 @@ public abstract class DataStore
 		this.addDefault(defaults, Messages.TransferClaimPermission, "That command requires the administrative claims permission.", null);
 		this.addDefault(defaults, Messages.TransferClaimMissing, "There's no claim here.  Stand in the administrative claim you want to transfer.", null);
 		this.addDefault(defaults, Messages.TransferClaimAdminOnly, "Only administrative claims may be transferred to a player.", null);
-		this.addDefault(defaults, Messages.PlayerNotFound, "Player not found.", null);
+		this.addDefault(defaults, Messages.PlayerNotFound2, "No player by that name has logged in recently.", null);
 		this.addDefault(defaults, Messages.TransferTopLevel, "Only top level claims (not subdivisions) may be transferred.  Stand outside of the subdivision and try again.", null);
 		this.addDefault(defaults, Messages.TransferSuccess, "Claim transferred.", null);
 		this.addDefault(defaults, Messages.TrustListNoClaim, "Stand inside the claim you're curious about.", null);
@@ -1172,8 +1164,8 @@ public abstract class DataStore
 		this.addDefault(defaults, Messages.ClaimExplosivesAdvertisement, "To allow explosives to destroy blocks in this land claim, use /ClaimExplosions.", null);
 		this.addDefault(defaults, Messages.PlayerInPvPSafeZone, "That player is in a PvP safe zone.", null);		
 		this.addDefault(defaults, Messages.NoPistonsOutsideClaims, "Warning: Pistons won't move blocks outside land claims.", null);
-		this.addDefault(defaults, Messages.SoftMuted, "Soft-muted {0}.", "The changed player's name.");
-		this.addDefault(defaults, Messages.UnSoftMuted, "Un-soft-muted {0}.", "The changed player's name.");
+		this.addDefault(defaults, Messages.SoftMuted, "Soft-muted {0}.", "0: The changed player's name.");
+		this.addDefault(defaults, Messages.UnSoftMuted, "Un-soft-muted {0}.", "0: The changed player's name.");
 		
 		//load the config file
 		FileConfiguration config = YamlConfiguration.loadConfiguration(new File(messagesFilePath));
@@ -1296,6 +1288,9 @@ public abstract class DataStore
 	    
 	    public void run()
 	    {
+	        //ensure player data is already read from file before trying to save
+	        playerData.getAccruedClaimBlocks();
+	        playerData.getClaims();
 	        asyncSavePlayerData(this.playerID, this.playerData);
 	    }
 	}
