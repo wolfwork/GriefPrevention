@@ -39,6 +39,7 @@ import org.bukkit.event.block.BlockDispenseEvent;
 import org.bukkit.event.block.BlockFromToEvent;
 import org.bukkit.event.block.BlockIgniteEvent;
 import org.bukkit.event.block.BlockIgniteEvent.IgniteCause;
+import org.bukkit.event.block.BlockMultiPlaceEvent;
 import org.bukkit.event.block.BlockPistonExtendEvent;
 import org.bukkit.event.block.BlockPistonRetractEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
@@ -104,8 +105,9 @@ public class BlockEventHandler implements Listener
 		boolean notEmpty = false;
 		for(int i = 0; i < event.getLines().length; i++)
 		{
-			if(event.getLine(i).length() != 0) notEmpty = true;
-			lines.append("\n" + event.getLine(i));
+			String withoutSpaces = event.getLine(i).replace(" ", ""); 
+		    if(!withoutSpaces.isEmpty()) notEmpty = true;
+			lines.append("\n  " + event.getLine(i));
 		}
 		
 		String signMessage = lines.toString();
@@ -129,6 +131,28 @@ public class BlockEventHandler implements Listener
 				}
 			}
 		}
+	}
+	
+	//when a player places multiple blocks...
+	@EventHandler(ignoreCancelled = true, priority = EventPriority.HIGHEST)
+	public void onBlocksPlace(BlockMultiPlaceEvent placeEvent)
+	{
+	    Player player = placeEvent.getPlayer();
+	    
+	    //don't track in worlds where claims are not enabled
+        if(!GriefPrevention.instance.claimsEnabledForWorld(placeEvent.getBlock().getWorld())) return;
+        
+        //make sure the player is allowed to build at the location
+        for(BlockState block : placeEvent.getReplacedBlockStates())
+        {
+            String noBuildReason = GriefPrevention.instance.allowBuild(player, block.getLocation(), block.getType());
+            if(noBuildReason != null)
+            {
+                GriefPrevention.sendMessage(player, TextMode.Err, noBuildReason);
+                placeEvent.setCancelled(true);
+                return;
+            }
+        }
 	}
 	
 	//when a player places a block...
@@ -214,7 +238,7 @@ public class BlockEventHandler implements Listener
 				//radius == 0 means protect ONLY the chest
 				if(GriefPrevention.instance.config_claims_automaticClaimsForNewPlayersRadius == 0)
 				{					
-					this.dataStore.createClaim(block.getWorld(), block.getX(), block.getX(), block.getY(), block.getY(), block.getZ(), block.getZ(), player.getUniqueId(), null, null);
+					this.dataStore.createClaim(block.getWorld(), block.getX(), block.getX(), block.getY(), block.getY(), block.getZ(), block.getZ(), player.getUniqueId(), null, null, player);
 					GriefPrevention.sendMessage(player, TextMode.Success, Messages.ChestClaimConfirmation);					
 				}
 				
@@ -228,7 +252,8 @@ public class BlockEventHandler implements Listener
 							block.getY() - GriefPrevention.instance.config_claims_claimsExtendIntoGroundDistance, block.getY(), 
 							block.getZ() - radius, block.getZ() + radius, 
 							player.getUniqueId(), 
-							null, null).succeeded)
+							null, null,
+							player).succeeded)
 					{
 						radius--;
 					}
@@ -242,7 +267,7 @@ public class BlockEventHandler implements Listener
 					Visualization.Apply(player, visualization);
 				}
 				
-				GriefPrevention.sendMessage(player, TextMode.Instr, Messages.SurvivalBasicsVideo, DataStore.SURVIVAL_VIDEO_URL);
+				GriefPrevention.sendMessage(player, TextMode.Instr, Messages.SurvivalBasicsVideo2, DataStore.SURVIVAL_VIDEO_URL);
 			}
 			
 			//check to see if this chest is in a claim, and warn when it isn't
@@ -269,23 +294,30 @@ public class BlockEventHandler implements Listener
 		//FEATURE: warn players when they're placing non-trash blocks outside of their claimed areas
 		else if(!this.trashBlocks.contains(block.getType()) && GriefPrevention.instance.claimsEnabledForWorld(block.getWorld()))
 		{
-			if(!playerData.warnedAboutBuildingOutsideClaims
+			if(!playerData.warnedAboutBuildingOutsideClaims && !player.hasPermission("griefprevention.adminclaims")
 			   && ((playerData.lastClaim == null && playerData.getClaims().size() == 0)
 			   || (playerData.lastClaim != null && playerData.lastClaim.isNear(player.getLocation(), 15))))
 			{
-				GriefPrevention.sendMessage(player, TextMode.Warn, Messages.BuildingOutsideClaims);
-				playerData.warnedAboutBuildingOutsideClaims = true;
-				
-				if(playerData.getClaims().size() < 2)
-				{
-				    GriefPrevention.sendMessage(player, TextMode.Instr, Messages.SurvivalBasicsVideo, DataStore.SURVIVAL_VIDEO_URL);
-				}
-				
-				if(playerData.lastClaim != null)
-				{
-				    Visualization visualization = Visualization.FromClaim(playerData.lastClaim, block.getY(), VisualizationType.Claim, player.getLocation());
-				    Visualization.Apply(player, visualization);
-				}
+				Long now = null;
+			    if(playerData.buildWarningTimestamp == null || (now = System.currentTimeMillis()) - playerData.buildWarningTimestamp > 600000)  //10 minute cooldown
+			    {
+    			    GriefPrevention.sendMessage(player, TextMode.Warn, Messages.BuildingOutsideClaims);
+    				playerData.warnedAboutBuildingOutsideClaims = true;
+    				
+    				if(now == null) now = System.currentTimeMillis();
+    				playerData.buildWarningTimestamp = now;
+    				
+    				if(playerData.getClaims().size() < 2)
+    				{
+    				    GriefPrevention.sendMessage(player, TextMode.Instr, Messages.SurvivalBasicsVideo2, DataStore.SURVIVAL_VIDEO_URL);
+    				}
+    				
+    				if(playerData.lastClaim != null)
+    				{
+    				    Visualization visualization = Visualization.FromClaim(playerData.lastClaim, block.getY(), VisualizationType.Claim, player.getLocation());
+    				    Visualization.Apply(player, visualization);
+    				}
+			    }
 			}
 		}
 		
@@ -605,7 +637,11 @@ public class BlockEventHandler implements Listener
             this.lastSpreadClaim = toClaim;
             if(!toClaim.contains(spreadEvent.getBlock().getLocation(), false, true))
             {
-                spreadEvent.setCancelled(true);
+                //exception: from parent into subdivision
+                if(toClaim.parent == null || !toClaim.parent.contains(spreadEvent.getBlock().getLocation(), false, false))
+                {
+                    spreadEvent.setCancelled(true);
+                }
             }
         }
 	}
