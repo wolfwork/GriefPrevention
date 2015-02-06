@@ -24,6 +24,9 @@ class UUIDFetcher {
     
     //cache for username -> uuid lookups
     static HashMap<String, UUID> lookupCache;
+    
+    //record of username -> proper casing updates
+    static HashMap<String, String> correctedNames;
  
     public UUIDFetcher(List<String> names, boolean rateLimiting) {
         this.names = names;
@@ -41,47 +44,48 @@ class UUIDFetcher {
             lookupCache = new HashMap<String, UUID>();
         }
         
+        if(correctedNames == null)
+        {
+            correctedNames = new HashMap<String, String>();
+        }
+        
         GriefPrevention.AddLogEntry("UUID conversion process started.  Please be patient - this may take a while.");
         
-        //try to get correct casing from local data
+        GriefPrevention.AddLogEntry("Mining your local world data to save calls to Mojang...");
         OfflinePlayer [] players = GriefPrevention.instance.getServer().getOfflinePlayers();
+        for(OfflinePlayer player : players)
+        {
+            if(player.getName() != null && player.getUniqueId() != null)
+            {
+                lookupCache.put(player.getName(), player.getUniqueId());
+                lookupCache.put(player.getName().toLowerCase(), player.getUniqueId());
+                correctedNames.put(player.getName().toLowerCase(), player.getName());
+            }
+        }
+        
+        //try to get correct casing from local data
         GriefPrevention.AddLogEntry("Checking local server data to get correct casing for player names...");
         for(int i = 0; i < names.size(); i++)
         {
             String name = names.get(i);
-            for(OfflinePlayer player : players)
+            String correctCasingName = correctedNames.get(name);
+            if(correctCasingName != null && !name.equals(correctCasingName))
             {
-                if(player.getName() != null && player.getName().equalsIgnoreCase(name))
-                {
-                    if(!player.getName().equals(name))
-                    {
-                        GriefPrevention.AddLogEntry(name + " --> " + player.getName());
-                        names.set(i,  player.getName()); 
-                    }
-                    break;
-                }
+                GriefPrevention.AddLogEntry(name + " --> " + correctCasingName);
+                names.set(i, correctCasingName); 
             }
         }
         
-        //look for local data first
+        //look for local uuid's first
         GriefPrevention.AddLogEntry("Checking local server data for UUIDs already seen...");
         for(int i = 0; i < names.size(); i++)
         {
             String name = names.get(i);
-            for(OfflinePlayer player : players)
+            UUID uuid = lookupCache.get(name);
+            if(uuid != null)
             {
-                if(player.getName() != null && player.getName().equalsIgnoreCase(name))
-                {
-                    UUID uuid = player.getUniqueId();
-                    if(uuid != null)
-                    {
-                        GriefPrevention.AddLogEntry(name + " --> " + uuid.toString());
-                        lookupCache.put(name, uuid);
-                        lookupCache.put(name.toLowerCase(), uuid);
-                        names.remove(i--);
-                    }
-                    break;
-                }
+                GriefPrevention.AddLogEntry(name + " --> " + uuid.toString());
+                names.remove(i--);
             }
         }
         

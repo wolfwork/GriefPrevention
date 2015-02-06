@@ -812,34 +812,37 @@ class PlayerEventHandler implements Listener
             GriefPrevention.instance.getServer().getScheduler().scheduleSyncDelayedTask(GriefPrevention.instance, task, 100L);
         
             //FEATURE: if the player teleporting doesn't have permission to build a nether portal and none already exists at the destination, cancel the teleportation
-            Location destination = event.getTo();
-            if(event.useTravelAgent())
+            if(GriefPrevention.instance.config_claims_portalsRequirePermission)
             {
-                if(event.getPortalTravelAgent().getCanCreatePortal())
+                Location destination = event.getTo();
+                if(event.useTravelAgent())
                 {
-                    //hypothetically find where the portal would be created if it were
-                    TravelAgent agent = event.getPortalTravelAgent();
-                    agent.setCanCreatePortal(false);
-                    destination = agent.findOrCreate(destination);
-                    agent.setCanCreatePortal(true);
+                    if(event.getPortalTravelAgent().getCanCreatePortal())
+                    {
+                        //hypothetically find where the portal would be created if it were
+                        TravelAgent agent = event.getPortalTravelAgent();
+                        agent.setCanCreatePortal(false);
+                        destination = agent.findOrCreate(destination);
+                        agent.setCanCreatePortal(true);
+                    }
+                    else
+                    {
+                        //if not able to create a portal, we don't have to do anything here
+                        return;
+                    }
                 }
-                else
-                {
-                    //if not able to create a portal, we don't have to do anything here
-                    return;
-                }
-            }
             
-            //if creating a new portal
-            if(destination.getBlock().getType() != Material.PORTAL)
-            {
-                //check for a land claim and the player's permission that land claim
-                Claim claim = this.dataStore.getClaimAt(destination, false, null);
-                if(claim != null && claim.allowBuild(player, Material.PORTAL) != null)
+                //if creating a new portal
+                if(destination.getBlock().getType() != Material.PORTAL)
                 {
-                    //cancel and inform about the reason
-                    event.setCancelled(true);
-                    GriefPrevention.sendMessage(player, TextMode.Err, Messages.NoBuildPortalPermission, claim.getOwnerName());
+                    //check for a land claim and the player's permission that land claim
+                    Claim claim = this.dataStore.getClaimAt(destination, false, null);
+                    if(claim != null && claim.allowBuild(player, Material.PORTAL) != null)
+                    {
+                        //cancel and inform about the reason
+                        event.setCancelled(true);
+                        GriefPrevention.sendMessage(player, TextMode.Err, Messages.NoBuildPortalPermission, claim.getOwnerName());
+                    }
                 }
             }
         }
@@ -918,7 +921,7 @@ class PlayerEventHandler implements Listener
         PlayerData playerData = this.dataStore.getPlayerData(player.getUniqueId());
         
 		//if entity is tameable and has an owner, apply special rules
-        if(entity instanceof Tameable && !GriefPrevention.instance.config_pvp_enabledWorlds.contains(entity.getLocation().getWorld()))
+        if(entity instanceof Tameable)
         {
             Tameable tameable = (Tameable)entity;
             if(tameable.isTamed() && tameable.getOwner() != null)
@@ -940,16 +943,19 @@ class PlayerEventHandler implements Listener
                    return;
                }
                
-               //otherwise disallow
-               OfflinePlayer owner = GriefPrevention.instance.getServer().getOfflinePlayer(ownerID); 
-               String ownerName = owner.getName();
-               if(ownerName == null) ownerName = "someone";
-               String message = GriefPrevention.instance.dataStore.getMessage(Messages.NotYourPet, ownerName);
-               if(player.hasPermission("griefprevention.ignoreclaims"))
-                   message += "  " + GriefPrevention.instance.dataStore.getMessage(Messages.IgnoreClaimsAdvertisement);
-               GriefPrevention.sendMessage(player, TextMode.Err, message);
-               event.setCancelled(true);
-               return;
+               if(!GriefPrevention.instance.config_pvp_enabledWorlds.contains(entity.getLocation().getWorld()))
+               {
+                   //otherwise disallow
+                   OfflinePlayer owner = GriefPrevention.instance.getServer().getOfflinePlayer(ownerID); 
+                   String ownerName = owner.getName();
+                   if(ownerName == null) ownerName = "someone";
+                   String message = GriefPrevention.instance.dataStore.getMessage(Messages.NotYourPet, ownerName);
+                   if(player.hasPermission("griefprevention.ignoreclaims"))
+                       message += "  " + GriefPrevention.instance.dataStore.getMessage(Messages.IgnoreClaimsAdvertisement);
+                   GriefPrevention.sendMessage(player, TextMode.Err, message);
+                   event.setCancelled(true);
+                   return;
+               }
             }
         }
         
@@ -1243,6 +1249,7 @@ class PlayerEventHandler implements Listener
 	    //not interested in left-click-on-air actions
 	    Action action = event.getAction();
 	    if(action == Action.LEFT_CLICK_AIR) return;
+	    if(action == Action.PHYSICAL) return;
         
 	    Player player = event.getPlayer();
 		Block clickedBlock = event.getClickedBlock(); //null returned here means interacting with air
@@ -1257,20 +1264,7 @@ class PlayerEventHandler implements Listener
 		    clickedBlockType = Material.AIR;
 		}
 		
-		//apply rule for players trampling tilled soil back to dirt (never allow it)
-        //NOTE: that this event applies only to players.  monsters and animals can still trample.
-        if(action == Action.PHYSICAL)
-        {
-            if(clickedBlockType == Material.SOIL)
-            {
-                event.setCancelled(true);
-            }
-
-            //not tracking any other "physical" interaction events right now
-            return;
-        }
-        
-        //don't care about left-clicking on most blocks, this is probably a break action
+		//don't care about left-clicking on most blocks, this is probably a break action
         PlayerData playerData = null;
         if(action == Action.LEFT_CLICK_BLOCK && clickedBlock != null)
         {
@@ -1309,6 +1303,7 @@ class PlayerEventHandler implements Listener
 		if(	clickedBlock != null && GriefPrevention.instance.config_claims_preventTheft && (
 						event.getAction() == Action.RIGHT_CLICK_BLOCK && (
 						this.isInventoryHolder(clickedBlock) ||
+						clickedBlockType == Material.CAULDRON ||
 						clickedBlockType == Material.JUKEBOX ||
 						clickedBlockType == Material.ANVIL ||
 						GriefPrevention.instance.config_mods_containerTrustIds.Contains(new MaterialInfo(clickedBlock.getTypeId(), clickedBlock.getData(), null)))))
@@ -1821,7 +1816,7 @@ class PlayerEventHandler implements Listener
 			}
 			
 			//if the player doesn't have claims permission, don't do anything
-			if(GriefPrevention.instance.config_claims_creationRequiresPermission && !player.hasPermission("griefprevention.createclaims"))
+			if(!player.hasPermission("griefprevention.createclaims"))
 			{
 				GriefPrevention.sendMessage(player, TextMode.Err, Messages.NoCreateClaimPermission);
 				return;
@@ -1879,8 +1874,9 @@ class PlayerEventHandler implements Listener
 					//measure new claim, apply size rules
 					int newWidth = (Math.abs(newx1 - newx2) + 1);
 					int newHeight = (Math.abs(newz1 - newz2) + 1);
+					boolean smaller = newWidth < playerData.claimResizing.getWidth() || newHeight < playerData.claimResizing.getHeight();
 							
-					if(!playerData.claimResizing.isAdminClaim() && (newWidth < GriefPrevention.instance.config_claims_minSize || newHeight < GriefPrevention.instance.config_claims_minSize))
+					if(!player.hasPermission("griefprevention.adminclaims") && !playerData.claimResizing.isAdminClaim() && smaller && (newWidth < GriefPrevention.instance.config_claims_minSize || newHeight < GriefPrevention.instance.config_claims_minSize))
 					{
 						GriefPrevention.sendMessage(player, TextMode.Err, Messages.ResizeClaimTooSmall, String.valueOf(GriefPrevention.instance.config_claims_minSize));
 						return;

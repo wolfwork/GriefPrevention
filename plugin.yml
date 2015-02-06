@@ -3,7 +3,7 @@ main: me.ryanhamshire.GriefPrevention.GriefPrevention
 softdepend: [Vault, Multiverse-Core, My Worlds, MystCraft, Transporter, TheUnderground, WorldGuard, WorldEdit]
 dev-url: http://dev.bukkit.org/server-mods/grief-prevention
 loadbefore: [TheUnderground]
-version: 10.5.3
+version: 10.6.2
 commands:
    abandonclaim:
       description: Deletes a claim.
@@ -149,7 +149,7 @@ commands:
 permissions:
     griefprevention.createclaims:
         description: Grants permission to create claims.
-        default: op
+        default: true
     griefprevention.admin.*:
         description: Grants all administrative functionality.
         children:
