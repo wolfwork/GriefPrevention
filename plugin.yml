@@ -3,7 +3,7 @@ main: me.ryanhamshire.GriefPrevention.GriefPrevention
 softdepend: [Vault, Multiverse-Core, My Worlds, MystCraft, Transporter, TheUnderground, WorldGuard, WorldEdit]
 dev-url: http://dev.bukkit.org/server-mods/grief-prevention
 loadbefore: [TheUnderground]
-version: 10.7.1
+version: 10.9
 commands:
    abandonclaim:
       description: Deletes a claim.
@@ -53,6 +53,11 @@ commands:
       usage: /AdjustBonusClaimBlocks <player> <amount>
       permission: griefprevention.adjustclaimblocks
       aliases: acb
+   setaccruedclaimblocks:
+      description: Updates a player's accrued claim block total.
+      usage: /SetAccruedClaimBlocks <player> <amount>
+      permission: griefprevention.adjustclaimblocks
+      aliases: scb
    deleteclaim:
       description: Deletes the claim you're standing in, even if it's not your claim.
       usage: /DeleteClaim
@@ -170,6 +175,10 @@ permissions:
             griefprevention.overrideclaimcountlimit: true
             griefprevention.transferclaim: true
             griefprevention.claimslistother: true
+            griefprevention.siegeimmune: true
+    griefprevention.siegeimmune:
+        description: Makes a player immune to /Siege.
+        default: op
     griefprevention.givepet:
         description: Grants permission to use /GivePet.
         default: true

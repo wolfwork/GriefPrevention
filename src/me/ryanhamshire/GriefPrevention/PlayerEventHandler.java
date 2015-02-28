@@ -450,23 +450,51 @@ class PlayerEventHandler implements Listener
 		}
 		
 		//if anti spam enabled, check for spam
-		if(!GriefPrevention.instance.config_spam_enabled) return;
+		if(GriefPrevention.instance.config_spam_enabled)
+		{
+    		//if the slash command used is in the list of monitored commands, treat it like a chat message (see above)
+    		boolean isMonitoredCommand = false;
+    		for(String monitoredCommand : GriefPrevention.instance.config_spam_monitorSlashCommands)
+    		{
+    			if(args[0].equalsIgnoreCase(monitoredCommand))
+    			{
+    				isMonitoredCommand = true;
+    				break;
+    			}
+    		}
+    		
+    		if(isMonitoredCommand)
+    		{
+    			event.setCancelled(this.handlePlayerChat(event.getPlayer(), event.getMessage(), event));		
+    		}
+		}
 		
-		//if the slash command used is in the list of monitored commands, treat it like a chat message (see above)
+		//if requires access trust, check for permission
 		boolean isMonitoredCommand = false;
-		for(String monitoredCommand : GriefPrevention.instance.config_spam_monitorSlashCommands)
-		{
-			if(args[0].equalsIgnoreCase(monitoredCommand))
-			{
-				isMonitoredCommand = true;
-				break;
-			}
-		}
-		
-		if(isMonitoredCommand)
-		{
-			event.setCancelled(this.handlePlayerChat(event.getPlayer(), event.getMessage(), event));		
-		}
+        for(String monitoredCommand : GriefPrevention.instance.config_claims_commandsRequiringAccessTrust)
+        {
+            if(args[0].equalsIgnoreCase(monitoredCommand))
+            {
+                isMonitoredCommand = true;
+                break;
+            }
+        }
+        
+        if(isMonitoredCommand)
+        {
+            Player player = event.getPlayer();
+            Claim claim = this.dataStore.getClaimAt(player.getLocation(), false, playerData.lastClaim);
+            if(claim != null)
+            {
+                playerData.lastClaim = claim;
+                String reason = claim.allowAccess(player); 
+                if(reason != null)
+                {
+                    GriefPrevention.sendMessage(player, TextMode.Err, reason);
+                    event.setCancelled(true);
+                }
+            }
+        }
 	}
 	
 	private ConcurrentHashMap<UUID, Date> lastLoginThisServerSessionMap = new ConcurrentHashMap<UUID, Date>();
@@ -628,7 +656,7 @@ class PlayerEventHandler implements Listener
 	}
 	
 	//when a player spawns, conditionally apply temporary pvp protection 
-    @EventHandler(ignoreCancelled = true)
+    @EventHandler(ignoreCancelled = true, priority = EventPriority.MONITOR)
     void onPlayerRespawn (PlayerRespawnEvent event)
     {
         Player player = event.getPlayer();
@@ -867,6 +895,7 @@ class PlayerEventHandler implements Listener
 				{
 					GriefPrevention.sendMessage(player, TextMode.Err, noAccessReason);
 					event.setCancelled(true);
+					player.getInventory().addItem(new ItemStack(Material.ENDER_PEARL));
 				}
 			}
 		}
@@ -1095,6 +1124,8 @@ class PlayerEventHandler implements Listener
 		                GriefPrevention.sendMessage(player, TextMode.Err, Messages.PickupBlockedExplanation, ownerName);
 		                playerData.receivedDropUnlockAdvertisement = true;
 		            }
+		            
+		            return;
 		        }
 		    }
 		}
@@ -1250,7 +1281,7 @@ class PlayerEventHandler implements Listener
 	    Action action = event.getAction();
 	    if(action == Action.LEFT_CLICK_AIR) return;
 	    if(action == Action.PHYSICAL) return;
-        
+	    
 	    Player player = event.getPlayer();
 		Block clickedBlock = event.getClickedBlock(); //null returned here means interacting with air
 		
@@ -1306,6 +1337,7 @@ class PlayerEventHandler implements Listener
 						clickedBlockType == Material.CAULDRON ||
 						clickedBlockType == Material.JUKEBOX ||
 						clickedBlockType == Material.ANVIL ||
+						clickedBlockType == Material.CAKE_BLOCK ||
 						GriefPrevention.instance.config_mods_containerTrustIds.Contains(new MaterialInfo(clickedBlock.getTypeId(), clickedBlock.getData(), null)))))
 		{			
 		    if(playerData == null) playerData = this.dataStore.getPlayerData(player.getUniqueId());
@@ -1408,6 +1440,25 @@ class PlayerEventHandler implements Listener
 				}
 			}			
 		}
+		
+		//otherwise apply rule for cake
+        else if(clickedBlock != null && GriefPrevention.instance.config_claims_preventTheft && clickedBlockType == Material.CAKE_BLOCK)
+        {
+            if(playerData == null) playerData = this.dataStore.getPlayerData(player.getUniqueId());
+            Claim claim = this.dataStore.getClaimAt(clickedBlock.getLocation(), false, playerData.lastClaim);
+            if(claim != null)
+            {
+                playerData.lastClaim = claim;
+                
+                String noContainerReason = claim.allowAccess(player);
+                if(noContainerReason != null)
+                {
+                    event.setCancelled(true);
+                    GriefPrevention.sendMessage(player, TextMode.Err, noContainerReason);
+                    return;
+                }
+            }           
+        }
 		
 		//apply rule for note blocks and repeaters and daylight sensors
 		else if(clickedBlock != null && 
@@ -2268,6 +2319,7 @@ class PlayerEventHandler implements Listener
             case LEVER:
             case DIODE_BLOCK_ON:  //redstone repeater
             case DIODE_BLOCK_OFF:
+            case CAKE_BLOCK:
                 return true;
             default:
                 return false;
