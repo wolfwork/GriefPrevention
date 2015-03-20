@@ -28,6 +28,8 @@ import java.util.UUID;
 import java.util.Vector;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Logger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import net.milkbowl.vault.economy.Economy;
 
@@ -133,6 +135,7 @@ public class GriefPrevention extends JavaPlugin
 	public double config_economy_claimBlocksPurchaseCost;			//cost to purchase a claim block.  set to zero to disable purchase.
 	public double config_economy_claimBlocksSellValue;				//return on a sold claim block.  set to zero to disable sale.
 	
+	public boolean config_blockClaimExplosions;                     //whether explosions may destroy claimed blocks
 	public boolean config_blockSurfaceCreeperExplosions;			//whether creeper explosions near or above the surface destroy blocks
 	public boolean config_blockSurfaceOtherExplosions;				//whether non-creeper explosions near or above the surface destroy blocks
 	public boolean config_blockSkyTrees;							//whether players can build trees on platforms in the sky
@@ -242,6 +245,7 @@ public class GriefPrevention extends JavaPlugin
 			{
 				GriefPrevention.AddLogEntry("Unable to initialize the file system data store.  Details:");
 				GriefPrevention.AddLogEntry(e.getMessage());
+				e.printStackTrace();
 			}
 		}
 		
@@ -258,7 +262,7 @@ public class GriefPrevention extends JavaPlugin
 		
 		//start the recurring cleanup event for entities in creative worlds
 		EntityCleanupTask task = new EntityCleanupTask(0);
-		this.getServer().getScheduler().scheduleSyncDelayedTask(GriefPrevention.instance, task, 20L);
+		this.getServer().getScheduler().scheduleSyncDelayedTask(GriefPrevention.instance, task, 20L * 60 * 2);
 		
 		//start recurring cleanup scan for unused claims belonging to inactive players
 		CleanupUnusedClaimsTask task2 = new CleanupUnusedClaimsTask();
@@ -497,6 +501,7 @@ public class GriefPrevention extends JavaPlugin
         this.config_lockDeathDropsInPvpWorlds = config.getBoolean("GriefPrevention.ProtectItemsDroppedOnDeath.PvPWorlds", false);
         this.config_lockDeathDropsInNonPvpWorlds = config.getBoolean("GriefPrevention.ProtectItemsDroppedOnDeath.NonPvPWorlds", true);
         
+        this.config_blockClaimExplosions = config.getBoolean("GriefPrevention.BlockLandClaimExplosions", true);
         this.config_blockSurfaceCreeperExplosions = config.getBoolean("GriefPrevention.BlockSurfaceCreeperExplosions", true);
         this.config_blockSurfaceOtherExplosions = config.getBoolean("GriefPrevention.BlockSurfaceOtherExplosions", true);
         this.config_blockSkyTrees = config.getBoolean("GriefPrevention.LimitSkyTrees", true);
@@ -717,6 +722,7 @@ public class GriefPrevention extends JavaPlugin
         outConfig.set("GriefPrevention.ProtectItemsDroppedOnDeath.PvPWorlds", this.config_lockDeathDropsInPvpWorlds);
         outConfig.set("GriefPrevention.ProtectItemsDroppedOnDeath.NonPvPWorlds", this.config_lockDeathDropsInNonPvpWorlds);
         
+        outConfig.set("GriefPrevention.BlockLandClaimExplosions", this.config_blockClaimExplosions);
         outConfig.set("GriefPrevention.BlockSurfaceCreeperExplosions", this.config_blockSurfaceCreeperExplosions);
         outConfig.set("GriefPrevention.BlockSurfaceOtherExplosions", this.config_blockSurfaceOtherExplosions);
         outConfig.set("GriefPrevention.LimitSkyTrees", this.config_blockSkyTrees);
@@ -1286,16 +1292,7 @@ public class GriefPrevention extends JavaPlugin
 			
 			else
 			{
-				//determine max purchasable blocks
 				PlayerData playerData = this.dataStore.getPlayerData(player.getUniqueId());
-				int maxPurchasable = GriefPrevention.instance.config_claims_maxAccruedBlocks - playerData.getAccruedClaimBlocks();
-				
-				//if the player is at his max, tell him so
-				if(maxPurchasable <= 0)
-				{
-					GriefPrevention.sendMessage(player, TextMode.Err, Messages.ClaimBlockLimit);
-					return true;
-				}
 				
 				//try to parse number of blocks
 				int blockCount;
@@ -1313,12 +1310,6 @@ public class GriefPrevention extends JavaPlugin
 					return false;
 				}
 				
-				//correct block count to max allowed
-				if(blockCount > maxPurchasable)
-				{
-					blockCount = maxPurchasable;
-				}
-				
 				//if the player can't afford his purchase, send error message
 				double balance = economy.getBalance(player);				
 				double totalCost = blockCount * GriefPrevention.instance.config_economy_claimBlocksPurchaseCost;				
@@ -1334,7 +1325,7 @@ public class GriefPrevention extends JavaPlugin
 					economy.withdrawPlayer(player, totalCost);
 					
 					//add blocks
-					playerData.setAccruedClaimBlocks(playerData.getAccruedClaimBlocks() + blockCount);
+					playerData.setBonusClaimBlocks(playerData.getBonusClaimBlocks() + blockCount);
 					this.dataStore.savePlayerData(player.getUniqueId(), playerData);
 					
 					//inform player
@@ -1370,12 +1361,12 @@ public class GriefPrevention extends JavaPlugin
 			
 			//load player data
 			PlayerData playerData = this.dataStore.getPlayerData(player.getUniqueId());
-			int availableBlocks = playerData.getRemainingClaimBlocks();
+			int availableBlocks = playerData.getBonusClaimBlocks();
 			
 			//if no amount provided, just tell player value per block sold, and how many he can sell
 			if(args.length != 1)
 			{
-				GriefPrevention.sendMessage(player, TextMode.Info, Messages.BlockSaleValue, String.valueOf(GriefPrevention.instance.config_economy_claimBlocksSellValue), String.valueOf(Math.max(0, availableBlocks - GriefPrevention.instance.config_claims_initialBlocks)));
+				GriefPrevention.sendMessage(player, TextMode.Info, Messages.BlockSaleValue, String.valueOf(GriefPrevention.instance.config_economy_claimBlocksSellValue), String.valueOf(availableBlocks));
 				return false;
 			}
 						
@@ -1396,7 +1387,7 @@ public class GriefPrevention extends JavaPlugin
 			}
 			
 			//if he doesn't have enough blocks, tell him so
-			if(blockCount > availableBlocks - GriefPrevention.instance.config_claims_initialBlocks)
+			if(blockCount > availableBlocks)
 			{
 				GriefPrevention.sendMessage(player, TextMode.Err, Messages.NotEnoughBlocksForSale);
 			}
@@ -1409,7 +1400,7 @@ public class GriefPrevention extends JavaPlugin
 				economy.depositPlayer(player, totalValue);
 				
 				//subtract blocks
-				playerData.setAccruedClaimBlocks(playerData.getAccruedClaimBlocks() - blockCount);
+				playerData.setBonusClaimBlocks(playerData.getBonusClaimBlocks() - blockCount);
 				this.dataStore.savePlayerData(player.getUniqueId(), playerData);
 				
 				//inform player
@@ -2058,8 +2049,11 @@ public class GriefPrevention extends JavaPlugin
 				GriefPrevention.instance.restoreClaim(claim, 20L * 60 * 2);
 			}
 			
-			//adjust claim blocks
-			playerData.setAccruedClaimBlocks(playerData.getAccruedClaimBlocks() - (int)Math.ceil((claim.getArea() * (1 - this.config_claims_abandonReturnRatio))));
+			//adjust claim blocks when abandoning a top level claim
+			if(claim.parent == null)
+			{
+			    playerData.setAccruedClaimBlocks(playerData.getAccruedClaimBlocks() - (int)Math.ceil((claim.getArea() * (1 - this.config_claims_abandonReturnRatio))));
+			}
 			
 			//tell the player how many claim blocks he has left
 			int remainingBlocks = playerData.getRemainingClaimBlocks();
@@ -2708,5 +2702,24 @@ public class GriefPrevention extends JavaPlugin
         }
         
         return result;
+    }
+
+    public boolean containsBlockedIP(String message)
+    {
+        message = message.replace("\r\n", "");
+        Pattern ipAddressPattern = Pattern.compile("([0-9]{1,3}\\.){3}[0-9]{1,3}");
+        Matcher matcher = ipAddressPattern.matcher(message);
+        
+        //if it looks like an IP address
+        if(matcher.find())
+        {
+            //and it's not in the list of allowed IP addresses
+            if(!GriefPrevention.instance.config_spam_allowedIpAddresses.contains(matcher.group()))
+            {
+                return true;
+            }
+        }
+        
+        return false;
     }
 }

@@ -112,17 +112,27 @@ public class BlockEventHandler implements Listener
 		for(int i = 0; i < event.getLines().length; i++)
 		{
 			String withoutSpaces = event.getLine(i).replace(" ", ""); 
-		    if(!withoutSpaces.isEmpty()) notEmpty = true;
-			lines.append("\n  " + event.getLine(i));
+		    if(!withoutSpaces.isEmpty())
+	        {
+		        notEmpty = true;
+		        lines.append("\n  " + event.getLine(i));
+	        }
 		}
 		
 		String signMessage = lines.toString();
+		
+		//prevent signs with blocked IP addresses 
+		if(!player.hasPermission("griefprevention.spam") && GriefPrevention.instance.containsBlockedIP(signMessage))
+        {
+            event.setCancelled(true);
+            return;
+        }
 		
 		//if not empty and wasn't the same as the last sign, log it and remember it for later
 		PlayerData playerData = this.dataStore.getPlayerData(player.getUniqueId());
 		if(notEmpty && playerData.lastMessage != null && !playerData.lastMessage.equals(signMessage))
 		{		
-			GriefPrevention.AddLogEntry("[Sign Placement] <" + player.getName() + "> " + " @ " + GriefPrevention.getfriendlyLocationString(event.getBlock().getLocation()) + lines.toString());
+			GriefPrevention.AddLogEntry("[Sign Placement] <" + player.getName() + "> " + " @ " + GriefPrevention.getfriendlyLocationString(event.getBlock().getLocation()) + ": " + lines.toString().replace("\n  ", ";"));
 			playerData.lastMessage = signMessage;
 			
 			if(!player.hasPermission("griefprevention.eavesdrop"))
