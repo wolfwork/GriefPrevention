@@ -31,13 +31,6 @@ import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 
-import com.sk89q.worldedit.BlockVector;
-import com.sk89q.worldguard.LocalPlayer;
-import com.sk89q.worldguard.bukkit.WorldGuardPlugin;
-import com.sk89q.worldguard.protection.ApplicableRegionSet;
-import com.sk89q.worldguard.protection.managers.RegionManager;
-import com.sk89q.worldguard.protection.regions.ProtectedCuboidRegion;
-
 //singleton class which manages all GriefPrevention data (except for config options)
 public abstract class DataStore 
 {
@@ -306,12 +299,19 @@ public abstract class DataStore
 	
 	abstract void saveGroupBonusBlocks(String groupName, int amount);
 	
-	synchronized public void changeClaimOwner(Claim claim, UUID newOwnerID) throws Exception
+	class NoTransferException extends Exception
+	{
+	    NoTransferException(String message)
+	    {
+	        super(message);
+	    }
+	}
+	synchronized public void changeClaimOwner(Claim claim, UUID newOwnerID) throws NoTransferException
 	{
 		//if it's a subdivision, throw an exception
 		if(claim.parent != null)
 		{
-			throw new Exception("Subdivisions can't be transferred.  Only top-level claims may change owners.");
+			throw new NoTransferException("Subdivisions can't be transferred.  Only top-level claims may change owners.");
 		}
 		
 		//otherwise update information

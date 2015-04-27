@@ -31,6 +31,7 @@ import me.ryanhamshire.GriefPrevention.Visualization;
 
 import org.bukkit.Location;
 import org.bukkit.OfflinePlayer;
+import org.bukkit.entity.Player;
 
 //holds all of GriefPrevention's player-tied data
 public class PlayerData 
@@ -171,6 +172,15 @@ public class PlayerData
 	{
 	    if(this.accruedClaimBlocks == null) this.loadDataFromSecondaryStorage();
         
+	    //if player is over accrued limit, accrued limit was probably reduced in config file AFTER he accrued
+        //in that case, leave his blocks where they are
+        int currentTotal = this.accruedClaimBlocks;
+        if(currentTotal >= GriefPrevention.instance.config_claims_maxAccruedBlocks)
+        {
+            this.newlyAccruedClaimBlocks = 0;
+            return currentTotal;
+        }
+	    
 	    //move any in the holding area
 	    int newTotal = this.accruedClaimBlocks + this.newlyAccruedClaimBlocks;
 	    this.newlyAccruedClaimBlocks = 0;
@@ -291,6 +301,18 @@ public class PlayerData
             int totalBlocks = this.accruedClaimBlocks + this.getBonusClaimBlocks() + GriefPrevention.instance.dataStore.getGroupBonusBlocks(this.playerID);
             if(totalBlocks < totalClaimsArea)
             {
+                OfflinePlayer player = GriefPrevention.instance.getServer().getOfflinePlayer(this.playerID);
+                GriefPrevention.AddLogEntry(player.getName() + " has more claimed land than blocks available.  Adding blocks to fix.", CustomLogEntryTypes.Debug, true);
+                GriefPrevention.AddLogEntry("Total blocks: " + totalBlocks + " Total claimed area: " + totalClaimsArea, CustomLogEntryTypes.Debug, true);
+                for(Claim claim : this.claims)
+                {
+                    GriefPrevention.AddLogEntry(
+                            GriefPrevention.getfriendlyLocationString(claim.getLesserBoundaryCorner()) + " // "
+                            + GriefPrevention.getfriendlyLocationString(claim.getGreaterBoundaryCorner()) + " = "
+                            + claim.getArea()
+                            , CustomLogEntryTypes.Debug, true);
+                }
+                
                 //try to fix it by adding to accrued blocks
                 this.accruedClaimBlocks = totalClaimsArea;
                 if(this.accruedClaimBlocks > GriefPrevention.instance.config_claims_maxAccruedBlocks)
