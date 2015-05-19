@@ -3,7 +3,7 @@ main: me.ryanhamshire.GriefPrevention.GriefPrevention
 softdepend: [Vault, Multiverse-Core, My Worlds, MystCraft, Transporter, TheUnderground, WorldGuard, WorldEdit, RoyalCommands]
 dev-url: http://dev.bukkit.org/server-mods/grief-prevention
 loadbefore: [TheUnderground]
-version: 11.5.1
+version: 11.6.1
 commands:
    abandonclaim:
       description: Deletes a claim.
@@ -152,6 +152,26 @@ commands:
       description: Allows an administrator to get technical information about blocks in the world and items in hand.
       usage: /GPBlockInfo
       permission: griefprevention.gpblockinfo
+   ignoreplayer:
+      description: Ignores another player's chat messages.
+      usage: /IgnorePlayer <player name>
+      aliases: [ignore]
+   unignoreplayer:
+      description: Unignores another player's chat messages.
+      usage: /UnIgnorePlayer <player name>
+      aliases: [unignore]
+   ignoredplayerlist:
+      description: Lists the players you're ignoring in chat.
+      usage: /IgnoredPlayerList
+      aliases: [ignores, ignored, ignorelist, ignoredlist, listignores, listignored, ignoring]
+   separate:
+      description: Forces two players to ignore each other in chat.
+      usage: /Separate
+      permission: griefprevention.separate
+   unseparate:
+      description: Reverses /separate.
+      usage: /UnSeparate
+      permission: griefprevention.separate
 permissions:
     griefprevention.createclaims:
         description: Grants permission to create claims.
@@ -176,6 +196,8 @@ permissions:
             griefprevention.transferclaim: true
             griefprevention.claimslistother: true
             griefprevention.siegeimmune: true
+            griefprevention.separate: true
+            griefprevention.eavesdropsigns: true
     griefprevention.siegeimmune:
         description: Makes a player immune to /Siege.
         default: op
@@ -212,6 +234,9 @@ permissions:
     griefprevention.eavesdrop:
         description: Allows a player to see whispered chat messages (/tell) and softmuted messages.
         default: op
+    griefprevention.eavesdropsigns:
+        description: Allows a player to see sign placements as chat messages.
+        default: op
     griefprevention.restorenatureaggressive:
         description: Grants access to /RestoreNatureAggressive and /RestoreNatureFill.
         default: op
@@ -238,4 +263,7 @@ permissions:
         default: op
     griefprevention.overrideclaimcountlimit:
         description: Allows players to create more claims than the limit specified by the config.
+        default: op
+    griefprevention.separate:
+        description: Grants access to /Separate and /UnSeparate.
         default: op
