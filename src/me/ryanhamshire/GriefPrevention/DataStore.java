@@ -366,7 +366,10 @@ public abstract class DataStore
 		//subdivisions are easy
 		if(newClaim.parent != null)
 		{
-			newClaim.parent.children.add(newClaim);
+			if(!newClaim.parent.children.contains(newClaim))
+			{
+			    newClaim.parent.children.add(newClaim);
+			}
 			newClaim.inDataStore = true;
 			if(writeToStorage)
 			{
@@ -397,7 +400,6 @@ public abstract class DataStore
 		{
 			PlayerData ownerData = this.getPlayerData(newClaim.ownerID);
 			ownerData.getClaims().add(newClaim);
-			this.savePlayerData(newClaim.ownerID, ownerData);
 		}
 		
 		//make sure the claim is saved to disk
@@ -1335,7 +1337,7 @@ public abstract class DataStore
 		this.addDefault(defaults, Messages.UnSeparateConfirmation, "Those players will no longer ignore each other in chat.", null);
         this.addDefault(defaults, Messages.NotIgnoringAnyone, "You're not ignoring anyone.", null);
 		this.addDefault(defaults, Messages.TrustListHeader, "Explicit permissions here:", null);
-		this.addDefault(defaults, Messages.Manage, "Manage.", null);
+		this.addDefault(defaults, Messages.Manage, "Manage", null);
 		this.addDefault(defaults, Messages.Build, "Build", null);
 		this.addDefault(defaults, Messages.Containers, "Containers", null);
 		this.addDefault(defaults, Messages.Access, "Access", null);
