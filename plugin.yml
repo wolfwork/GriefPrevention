@@ -3,7 +3,7 @@ main: me.ryanhamshire.GriefPrevention.GriefPrevention
 softdepend: [Vault, Multiverse-Core, My Worlds, MystCraft, Transporter, TheUnderground, WorldGuard, WorldEdit, RoyalCommands]
 dev-url: http://dev.bukkit.org/server-mods/grief-prevention
 loadbefore: [TheUnderground]
-version: 11.6.2
+version: 13.3
 commands:
    abandonclaim:
       description: Deletes a claim.
@@ -20,7 +20,7 @@ commands:
       permission: griefprevention.claims
    trust:
       description: Grants a player full access to your claim(s).
-      usage: /Trust <player>  Graants a player permission to build.  See also /UnTrust, /ContainerTrust, /AccessTrust, and /PermissionTrust.
+      usage: /Trust <player>  Grants a player permission to build.  See also /UnTrust, /ContainerTrust, /AccessTrust, and /PermissionTrust.
       aliases: tr
       permission: griefprevention.claims
    untrust:
@@ -29,8 +29,8 @@ commands:
       aliases: ut
       permission: griefprevention.claims
    containertrust:
-      description: Grants a player access to your containers.
-      usage: /ContainerTrust <player>.  Grants a player access to your inventory, bed, and buttons/levers.
+      description: Grants a player access to your claim's containers, crops, animals, bed, buttons, and levers.
+      usage: /ContainerTrust <player>.  Grants a player access to your inventory, crops, animals, bed, and buttons/levers.
       aliases: ct
       permission: griefprevention.claims
    accesstrust:
@@ -105,6 +105,7 @@ commands:
    trapped:
       description: Ejects you to nearby unclaimed land.  Has a substantial cooldown period.
       usage: /Trapped
+      permission: griefprevention.trapped
    trustlist:
       description: Lists permissions for the claim you're standing in.
       usage: /TrustList
@@ -112,6 +113,7 @@ commands:
    siege:
       description: Initiates a siege versus another player.
       usage: /Siege <playerName>
+      permission: griefprevention.siege
    ignoreclaims:
       description: Toggles ignore claims mode.
       usage: /IgnoreClaims
@@ -121,6 +123,10 @@ commands:
       description: Deletes all administrative claims.
       usage: /DeleteAllAdminClaims
       permission: griefprevention.adminclaims
+   adminclaimslist:
+      description: Lists all administrative claims.
+      usage: /AdminClaimsList
+      permission: griefprevention.adminclaims
    transferclaim:
       description: Converts an administrative claim to a private claim.
       usage: /TransferClaim <player>
@@ -129,13 +135,16 @@ commands:
    unlockdrops:
       description: Allows other players to pick up the items you dropped when you died.
       usage: /UnlockDrops
+      permission: griefprevention.unlockdrops
    claimslist:
       description: Lists information about a player's claim blocks and claims.
       usage: /ClaimsList or /ClaimsList <player>
       aliases: [claimlist, listclaims]
+      permission: griefprevention.claims
    claimexplosions:
       description: Toggles whether explosives may be used in a specific land claim.
       usage: /ClaimExplosions
+      permission: griefprevention.claims
    softmute:
       description: Toggles whether a player's messages will only reach other soft-muted players.
       usage: /SoftMute <player>
@@ -156,22 +165,29 @@ commands:
       description: Ignores another player's chat messages.
       usage: /IgnorePlayer <player name>
       aliases: [ignore]
+      permission: griefprevention.ignore
    unignoreplayer:
       description: Unignores another player's chat messages.
       usage: /UnIgnorePlayer <player name>
       aliases: [unignore]
+      permission: griefprevention.ignore
    ignoredplayerlist:
       description: Lists the players you're ignoring in chat.
       usage: /IgnoredPlayerList
       aliases: [ignores, ignored, ignorelist, ignoredlist, listignores, listignored, ignoring]
+      permission: griefprevention.ignore
    separate:
       description: Forces two players to ignore each other in chat.
-      usage: /Separate
+      usage: /Separate <player1> <player2>
       permission: griefprevention.separate
    unseparate:
       description: Reverses /separate.
-      usage: /UnSeparate
+      usage: /UnSeparate <player1> <player2>
       permission: griefprevention.separate
+   claimbook:
+      description: Gives a player a manual about claiming land.
+      usage: /ClaimBook <player>
+      permission: griefprevention.claimbook
 permissions:
     griefprevention.createclaims:
         description: Grants permission to create claims.
@@ -198,11 +214,24 @@ permissions:
             griefprevention.siegeimmune: true
             griefprevention.separate: true
             griefprevention.eavesdropsigns: true
+            griefprevention.claimbook: true
+            griefprevention.notignorable: true
+            griefprevention.seeinactivity: true
+            griefprevention.eavesdropimmune: true
     griefprevention.siegeimmune:
         description: Makes a player immune to /Siege.
         default: op
     griefprevention.givepet:
         description: Grants permission to use /GivePet.
+        default: true
+    griefprevention.siege:
+        description: Grants permission to use /Siege.
+        default: true
+    griefprevention.unlockdrops:
+        description: Grants permission to use /UnlockDrops.
+        default: true
+    griefprevention.trapped:
+        description: Grants permission to use /Trapped.
         default: true
     griefprevention.claimslistother:
         description: Grants permission to use /ClaimsList to get another player's information.
@@ -266,4 +295,19 @@ permissions:
         default: op
     griefprevention.separate:
         description: Grants access to /Separate and /UnSeparate.
+        default: op
+    griefprevention.ignore:
+        description: Grants access to /Ignore, /Unignore, and /IgnoreList
+        default: true
+    griefprevention.claimbook:
+        description: Grants access to /ClaimBook.
+        default: op
+    griefprevention.notignorable:
+        description: Players with this permission can't be ignored.
+        default: op
+    griefprevention.seeinactivity:
+        description: Players with this permission can see how long a claim owner has been offline.
+        default: op
+    griefprevention.eavesdropimmune:
+        description: Players with this permission can't have their private messages eavesdropped.
         default: op

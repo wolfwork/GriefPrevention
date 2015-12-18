@@ -86,7 +86,7 @@ public class Visualization
 				player.sendBlockChange(element.location, element.realMaterial, element.realData);
 			}
 			
-			playerData.currentVisualization = null;
+			playerData.currentVisualization = null;  
 		}
 	}
 	
@@ -105,7 +105,9 @@ public class Visualization
 		//add subdivisions first
 		for(int i = 0; i < claim.children.size(); i++)
 		{
-			visualization.addClaimElements(claim.children.get(i), height, VisualizationType.Subdivision, locality);
+			Claim child = claim.children.get(i);
+		    if(!child.inDataStore) continue;
+		    visualization.addClaimElements(child, height, VisualizationType.Subdivision, locality);
 		}
 		
 		//special visualization for administrative land claims
@@ -282,6 +284,9 @@ public class Visualization
 		return (	block.getType() != Material.SNOW && (
 		            block.getType() == Material.AIR ||
 					block.getType() == Material.FENCE ||
+					block.getType() == Material.SIGN ||
+					block.getType() == Material.SIGN_POST ||
+					block.getType() == Material.WALL_SIGN ||
 					(waterIsTransparent && block.getType() == Material.STATIONARY_WATER) || 
 					block.getType().isTransparent()));
 	}

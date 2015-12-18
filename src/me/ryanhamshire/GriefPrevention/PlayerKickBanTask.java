@@ -18,6 +18,9 @@
  
 package me.ryanhamshire.GriefPrevention;
 
+import org.bukkit.BanList;
+import org.bukkit.Bukkit;
+import org.bukkit.BanList.Type;
 import org.bukkit.entity.Player;
 
 //kicks or bans a player
@@ -31,13 +34,17 @@ class PlayerKickBanTask implements Runnable
 	//message to send player.
 	private String reason;
 	
+	//source of ban
+	private String source;
+	
 	//whether to ban
 	private boolean ban;
 	
-	public PlayerKickBanTask(Player player, String reason, boolean ban)
+	public PlayerKickBanTask(Player player, String reason, String source, boolean ban)
 	{
 		this.player = player;
 		this.reason = reason;	
+		this.source = source;
 		this.ban = ban;
 	}
 	
@@ -47,13 +54,7 @@ class PlayerKickBanTask implements Runnable
 		if(this.ban)
 		{		
 			//ban
-			this.player.setBanned(true);
-		
-			//kick
-			if(this.player.isOnline())
-			{
-				this.player.kickPlayer(this.reason);
-			}
+			GriefPrevention.banPlayer(this.player, this.reason, this.source);
 		}	
 		else if(this.player.isOnline())
 		{

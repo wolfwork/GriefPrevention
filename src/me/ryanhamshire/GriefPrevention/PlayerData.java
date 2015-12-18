@@ -141,8 +141,14 @@ public class PlayerData
 	
 	//ignore list
 	//true means invisible (admin-forced ignore), false means player-created ignore
-	ConcurrentHashMap<UUID, Boolean> ignoredPlayers = new ConcurrentHashMap<UUID, Boolean>();
-	boolean ignoreListChanged = false;
+	public ConcurrentHashMap<UUID, Boolean> ignoredPlayers = new ConcurrentHashMap<UUID, Boolean>();
+	public boolean ignoreListChanged = false;
+
+    //profanity warning, once per play session
+	boolean profanityWarned = false;
+
+    //true when the player's IP address was counted against the re-use limit when he joined
+	boolean ipLimited = false;
 	
 	//whether or not this player is "in" pvp combat
 	public boolean inPvpCombat()
@@ -298,6 +304,11 @@ public class PlayerData
             for(int i = 0; i < dataStore.claims.size(); i++)
             {
                 Claim claim = dataStore.claims.get(i);
+                if(!claim.inDataStore)
+                {
+                    dataStore.claims.remove(i--);
+                    continue;
+                }
                 if(playerID.equals(claim.ownerID))
                 {
                     this.claims.add(claim);
@@ -317,6 +328,7 @@ public class PlayerData
                 GriefPrevention.AddLogEntry("Total blocks: " + totalBlocks + " Total claimed area: " + totalClaimsArea, CustomLogEntryTypes.Debug, true);
                 for(Claim claim : this.claims)
                 {
+                    if(!claim.inDataStore) continue;
                     GriefPrevention.AddLogEntry(
                             GriefPrevention.getfriendlyLocationString(claim.getLesserBoundaryCorner()) + " // "
                             + GriefPrevention.getfriendlyLocationString(claim.getGreaterBoundaryCorner()) + " = "
@@ -338,6 +350,14 @@ public class PlayerData
                 {
                     this.bonusClaimBlocks += totalClaimsArea - totalBlocks;
                 }
+            }
+        }
+        
+        for(int i = 0; i < this.claims.size(); i++)
+        {
+            if(!claims.get(i).inDataStore)
+            {
+                claims.remove(i--);
             }
         }
         
